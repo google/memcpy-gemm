@@ -31,8 +31,8 @@
 #include "absl/synchronization/notification.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
-#include "gemm_test_lib.h"
-#include "multi_gemm_lib.h"
+#include "src/gemm_test_lib.h"
+#include "src/multi_gemm_lib.h"
 #include "cuda/include/cuda_runtime.h"
 
 namespace platforms_gpus {

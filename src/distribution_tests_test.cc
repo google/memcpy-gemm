@@ -14,7 +14,7 @@
 
 // Tests for the statistical distribution tests.
 
-#include "distribution_tests.h"
+#include "src/distribution_tests.h"
 
 #include <memory>
 #include <vector>

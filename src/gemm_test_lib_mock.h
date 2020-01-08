@@ -16,8 +16,8 @@
 #define PLATFORMS_GPUS_TESTING_NVIDIA_GEMM_TEST_LIB_MOCK_H_
 
 #include "gmock/gmock.h"
-#include "gemm_test_lib.h"
-#include "memory_allocator_interface.h"
+#include "src/gemm_test_lib.h"
+#include "src/memory_allocator_interface.h"
 
 namespace platforms_gpus {
 namespace gemm_test {

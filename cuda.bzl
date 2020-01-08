@@ -39,7 +39,7 @@ cc_library(
     name = "cublas_static",
     srcs = [
         "cuda/lib64/libcublas_static.a",
-        "cuda/lib64/libcublasLt_static.a",        
+        "cuda/lib64/libcublasLt_static.a",
         "cuda/lib64/libculibos.a",
     ],
     deps = [

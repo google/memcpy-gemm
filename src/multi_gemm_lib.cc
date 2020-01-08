@@ -13,7 +13,7 @@
 // limitations under the License.
 
 
-#include "multi_gemm_lib.h"
+#include "src/multi_gemm_lib.h"
 
 #include <stddef.h>
 #include <string.h>

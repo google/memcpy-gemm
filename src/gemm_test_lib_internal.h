@@ -20,10 +20,10 @@
 #include <memory>
 #include <string>
 
-#include "gemm_test_lib.h"
-#include "matrix_lib.h"
-#include "memory_allocator_interface.h"
-#include "multi_gemm_lib.h"
+#include "src/gemm_test_lib.h"
+#include "src/matrix_lib.h"
+#include "src/memory_allocator_interface.h"
+#include "src/multi_gemm_lib.h"
 
 namespace platforms_gpus {
 namespace gemm_test {

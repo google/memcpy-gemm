@@ -15,8 +15,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "matrix_lib.h"
-#include "distribution_tests.h"
+#include "src/matrix_lib.h"
+#include "src/distribution_tests.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"

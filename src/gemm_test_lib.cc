@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gemm_test_lib.h"
+#include "src/gemm_test_lib.h"
 
 #include "absl/memory/memory.h"
-#include "gemm_test_lib_internal.h"
-#include "matrix_lib.h"
+#include "src/gemm_test_lib_internal.h"
+#include "src/matrix_lib.h"
 #include "include/half.hpp"
 
 namespace {

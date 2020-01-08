@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "memcpy_gemm_lib.h"
+#include "src/memcpy_gemm_lib.h"
 
 #include <string.h>
 
@@ -28,8 +28,8 @@
 #include "absl/synchronization/notification.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
-#include "cuda_check.h"
-#include "gemm_test_lib.h"
+#include "src/cuda_check.h"
+#include "src/gemm_test_lib.h"
 #include "cuda/include/cuda_runtime.h"
 #include "numa.h"
 

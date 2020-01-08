@@ -21,9 +21,9 @@
 
 #include "glog/logging.h"
 #include "absl/random/random.h"
-#include "cuda_check.h"
-#include "matrix_lib.h"
-#include "memory_allocator_interface.h"
+#include "src/cuda_check.h"
+#include "src/matrix_lib.h"
+#include "src/memory_allocator_interface.h"
 #include "cuda/include/cublas_v2.h"
 #include "cuda/include/cuda_runtime.h"
 #include "include/half.hpp"

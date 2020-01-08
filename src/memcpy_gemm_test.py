@@ -34,8 +34,9 @@ class MemcpyGemmTest(unittest.TestCase):
   def setUp(self):
     self.duration_s = 5
     self.timeout_s = self.duration_s + 15
+    exec_path = 'memcpy_gemm'
     self.memcpy_gemm_args = [
-        os.path.abspath("memcpy_gemm"),                     
+        os.path.abspath(exec_path),
         '--duration={}s'.format(self.duration_s),
         # Tests running on forge can only use 1 GPU.
         '--gpus=0',

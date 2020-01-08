@@ -6,9 +6,9 @@ exports_files(["LICENSE"])
 
 cc_library(
     name = "matrix_lib",
-    srcs = ["matrix_lib.cc"],
+    srcs = ["src/matrix_lib.cc"],
     hdrs = [
-        "matrix_lib.h",
+        "src/matrix_lib.h",
     ],
     deps = [
         "@absl//absl/base",
@@ -21,11 +21,11 @@ cc_library(
 
 cc_library(
     name = "multi_gemm_lib",
-    srcs = ["multi_gemm_lib.cc"],
+    srcs = ["src/multi_gemm_lib.cc"],
     hdrs = [
-        "cuda_check.h",
-        "memory_allocator_interface.h",
-        "multi_gemm_lib.h",
+        "src/cuda_check.h",
+        "src/memory_allocator_interface.h",
+        "src/multi_gemm_lib.h",
     ],
     deps = [
         ":matrix_lib",
@@ -42,8 +42,8 @@ cc_library(
 
 cc_library(
     name = "memcpy_gemm_lib",
-    srcs = ["memcpy_gemm_lib.cc"],
-    hdrs = ["memcpy_gemm_lib.h"],
+    srcs = ["src/memcpy_gemm_lib.cc"],
+    hdrs = ["src/memcpy_gemm_lib.h"],
     deps = [
         ":gemm_test_lib",
         ":multi_gemm_lib",
@@ -60,7 +60,7 @@ cc_library(
 
 cc_binary(
     name = "memcpy_gemm",
-    srcs = ["memcpy_gemm.cc"],
+    srcs = ["src/memcpy_gemm.cc"],
     deps = [
         ":gemm_test_lib",
         ":memcpy_gemm_lib",
@@ -80,14 +80,13 @@ cc_binary(
 
 py_test(
     name = "memcpy_gemm_test",
-    srcs = ["memcpy_gemm_test.py"],
+    srcs = ["src/memcpy_gemm_test.py"],
     data = [
         ":memcpy_gemm",
     ],
     python_version = "PY3",
     tags = [
         "nomsan",
-        "nvcc",
         "requires-gpu-sm35",
     ],
 )
@@ -95,12 +94,11 @@ py_test(
 cc_library(
     name = "gemm_test_lib",
     srcs = [
-        "gemm_test_lib.cc",
+        "src/gemm_test_lib.cc",
     ],
     hdrs = [
-        "gemm_test_lib.h",
+        "src/gemm_test_lib.h",
     ],
-    tags = ["cuda8"],
     deps = [
         ":gemm_test_lib_internal",
         ":matrix_lib",
@@ -114,13 +112,12 @@ cc_library(
 cc_library(
     name = "gemm_test_lib_internal",
     srcs = [
-        "gemm_test_lib.h",
-        "gemm_test_lib_internal.cc",
+        "src/gemm_test_lib.h",
+        "src/gemm_test_lib_internal.cc",
     ],
     hdrs = [
-        "gemm_test_lib_internal.h",
+        "src/gemm_test_lib_internal.h",
     ],
-    tags = ["cuda8"],
     deps = [
         ":matrix_lib",
         ":multi_gemm_lib",
@@ -134,8 +131,7 @@ cc_library(
 
 cc_library(
     name = "gemm_test_lib_mock",
-    hdrs = ["gemm_test_lib_mock.h"],
-    tags = ["cuda8"],
+    hdrs = ["src/gemm_test_lib_mock.h"],
     deps = [
         ":gemm_test_lib",
         ":multi_gemm_lib",
@@ -145,8 +141,8 @@ cc_library(
 
 cc_library(
     name = "distribution_tests",
-    srcs = ["distribution_tests.cc"],
-    hdrs = ["distribution_tests.h"],
+    srcs = ["src/distribution_tests.cc"],
+    hdrs = ["src/distribution_tests.h"],
     deps = [
         "@absl//absl/types:span",
         "@glog",
@@ -156,7 +152,7 @@ cc_library(
 cc_test(
     name = "distribution_tests_test",
     size = "small",
-    srcs = ["distribution_tests_test.cc"],
+    srcs = ["src/distribution_tests_test.cc"],
     deps = [
         ":distribution_tests",
         "@absl//absl/memory",
@@ -166,7 +162,7 @@ cc_test(
 
 cc_test(
     name = "matrix_lib_test",
-    srcs = ["matrix_lib_test.cc"],
+    srcs = ["src/matrix_lib_test.cc"],
     deps = [
         ":distribution_tests",
         ":matrix_lib",

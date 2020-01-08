@@ -31,11 +31,11 @@ Building:
 With the proper dependencies installed, building the memcpy_gemm binary
 should be as simple as:
 
-"blaze build :memcpy_gemm"
+"bazel build :memcpy_gemm"
 
 and the memcpy_gemm binary is built in to bazel-bin
 
-To run tests, "blaze test :memcpy_gemm_test" or "blaze test :all". Note that
+To run tests, "bazel test :memcpy_gemm_test" or "bazel test :all". Note that
 the memcpy_gemm_test assumes that one GPU is available, but makes no assumptions
 about its performance characteristics.
 
