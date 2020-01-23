@@ -1,1 +1,5 @@
 build --cxxopt='-std=c++17'
+
+build:clangstatic --compiler=clang-static --cpu=k8
+build:clangstatic --crosstool_top=//toolchain:clangstatic
+build:clangstatic --host_crosstool_top=//toolchain:clangstatic
