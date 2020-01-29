@@ -22,6 +22,7 @@ load(
     _PREPROCESS_ASSEMBLE_ACTION_NAME = "PREPROCESS_ASSEMBLE_ACTION_NAME",
 )
 
+
 all_link_actions = [
     _CPP_LINK_EXECUTABLE_ACTION_NAME,
     _CPP_LINK_DYNAMIC_LIBRARY_ACTION_NAME,
@@ -72,11 +73,12 @@ def _impl(ctx):
                flag_groups = [
                    flag_group(
                        flags = [
+			   "-static-libgcc",
                            "-Wl,-Bstatic",
 			   "-lstdc++",
-			   "-Wl,-Bdynamic",
-			   "-lm",
-                           "-Wl,-z,relro,-z,now",
+			   "-Wl,-Bdynamic",			   
+                           "-lm",
+			   "-ldl",
                            "-no-canonical-prefixes",
                            "-pass-exit-codes",
                        ],
