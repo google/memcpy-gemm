@@ -1,23 +1,21 @@
 load("//toolchain:cc_toolchain_config.bzl", "cc_toolchain_config")
 
 package(default_visibility = ['//visibility:public'])
-cc_toolchain_config(name = "clangstatic_toolchain_config")
+cc_toolchain_config(name = "static_toolchain_config")
 
 cc_toolchain_suite(
-    name = "clangstatic",
+    name = "static",
     toolchains = {
-        "k8|clang-static": ":clangstatic_toolchain",
-        "k8": ":clangstatic_toolchain",
-
+        "k8|staticbuilder": ":static_toolchain",
     },
 )
 
 filegroup(name = "empty")
 
 cc_toolchain(
-    name = "clangstatic_toolchain",
-    toolchain_identifier = "clangstatic-toolchain",
-    toolchain_config = ":clangstatic_toolchain_config",
+    name = "static_toolchain",
+    toolchain_identifier = "static-toolchain",
+    toolchain_config = ":static_toolchain_config",
     all_files = ":empty",
     compiler_files = ":empty",
     dwp_files = ":empty",

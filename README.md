@@ -41,7 +41,7 @@ the memcpy_gemm_test assumes that one GPU is available, but makes no assumptions
 about its performance characteristics.
 
 ## Creating a static build:
-By default, when built on most linux systems memcpy-gemm dynamically links to 
+By default, when built on most linux systems memcpy-gemm dynamically links to
 libgcc, libstdc++, and libc. While some dynamic dependencies to libc are unavoidable,
 memcpy-gemm will link statically to libstdc++ and libgcc if compiled in the static configuration:
 
@@ -50,16 +50,16 @@ memcpy-gemm will link statically to libstdc++ and libgcc if compiled in the stat
 This mode is useful for sidestepping dependencies when building for cross-compilation.
 
 ### Troubleshooting static build
-memcpy-gemm uses it's own description of the C++ toolchain for static builds. On some linux systems, 
-the toolchain include paths may be incorrectly configured. When building in static mode, this can 
+memcpy-gemm uses it's own description of the C++ toolchain for static builds. On some linux systems,
+the toolchain include paths may be incorrectly configured. When building in static mode, this can
 lead to errors such as:
 
 > this rule is missing dependency declarations for the following files included by (some library)
 > '/usr/lib/....some header'
 > '/usr/lib/....other header'
 
-In the short term, this issue can be fixed by modifying the C++ toolchain descriptor file. 
-Open /(path/to/memcpy-gemm/source)/toolchain/cc_toolchain_config.bzl. Search for the 
+In the short term, this issue can be fixed by modifying the C++ toolchain descriptor file.
+Open /(path/to/memcpy-gemm/source)/toolchain/cc_toolchain_config.bzl. Search for the
 cxx_bultin_include_directories variable, and add the path to your headers to the list.
 
 ## Running:

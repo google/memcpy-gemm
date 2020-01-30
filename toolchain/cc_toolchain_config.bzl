@@ -73,14 +73,14 @@ def _impl(ctx):
                flag_groups = [
                    flag_group(
                        flags = [
-			   "-static-libgcc",
-                           "-Wl,-Bstatic",
-			   "-lstdc++",
-			   "-Wl,-Bdynamic",			   
-                           "-lm",
-			   "-ldl",
-                           "-no-canonical-prefixes",
-                           "-pass-exit-codes",
+			                "-static-libgcc",
+                            "-Wl,-Bstatic",
+			                "-lstdc++",
+			                "-Wl,-Bdynamic",			   
+                            "-lm",
+			                "-ldl",
+                            "-no-canonical-prefixes",
+                            "-pass-exit-codes",
                        ],
                    ),
                ],
@@ -97,20 +97,17 @@ def _impl(ctx):
 
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
-
         toolchain_identifier = "clangstatic-toolchain",
         host_system_name = "unknown-linux-gnu",
         target_system_name = "unknown-linux-gnu",
         target_cpu = "k8",
-	cxx_builtin_include_directories = ["/usr/include", "/usr/lib/gcc/x86_64-linux-gnu/8/include", "/usr/lib/gcc/x86_64-linux-gnu/8/include-fixed"],
+	    cxx_builtin_include_directories = ["/usr/include", "/usr/include/linux"],
         target_libc = "unknown",
         compiler = "clang-static",
         abi_version = "unknown",
         abi_libc_version = "unknown",
-	tool_paths = tool_paths,
-#        features = [default_link_flags_feature, "static_link_cpp_runtimes", "static_linking_mode"],
+	    tool_paths = tool_paths,
         features = [default_link_flags_feature, ],
-
     )
 
 cc_toolchain_config = rule(
