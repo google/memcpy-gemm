@@ -1,6 +1,7 @@
 load("//toolchain:cc_toolchain_config.bzl", "cc_toolchain_config")
 
 package(default_visibility = ["//visibility:public"])
+
 cc_toolchain_config(name = "static_toolchain_config")
 
 cc_toolchain_suite(
