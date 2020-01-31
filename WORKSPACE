@@ -12,6 +12,7 @@ http_archive(
     urls = [
       "https://github.com/abseil/abseil-cpp/archive/0514227d2547793b23e209809276375e41c76617.zip", # 2019-11-26
     ],
+    sha256 = "2eba659382882cb4b484aee49c34ad483673848974e56f45547f5abff18d0dbf",
 )
 
 http_archive(
@@ -20,6 +21,7 @@ http_archive(
     urls = [
       "https://github.com/google/googletest/archive/34e92be31cf457ad4054b7908ee5e0e214dbcddc.zip", # 2019-11-26
     ],
+    sha256 = "32b379d8e704e374f687f90ea8be610f83578c1ba7d55e3f2a5be11fe991ec2e",
 )
 
 http_archive(
@@ -28,6 +30,7 @@ http_archive(
     urls = [
       "https://github.com/google/re2/archive/bb8e777557ddbdeabdedea4f23613c5021ffd7b1.zip", # 2019-11-25
     ],
+    sha256 = "128fa6a017e7cbf6b9ce5614f9842196d384c3563eb2f2e8d7f37f4c64e62857",
 )
 
 # Repositories without a build file - we link our own.
@@ -39,6 +42,7 @@ http_archive(
     urls = [
       "https://github.com/google/glog/archive/925858d9969d8ee22aabc3635af00a37891f4e25.zip", # 2019-11-20
     ],
+    sha256 = "dbe787f2a7cf1146f748a191c99ae85d6b931dd3ebdcc76aa7ccae3699149c67",
 )
 
 http_archive(
@@ -47,6 +51,7 @@ http_archive(
     urls = [
       "https://ayera.dl.sourceforge.net/project/half/half/1.12.0/half-1.12.0.zip",
     ],
+    sha256 = "cdd70d3bf3fe091b688e7ab3f48471c881a197d2c186c95cca8bf156961fb41c",
 )
 
 # ===== cuda and libnuma need to be configured for the platform =====
