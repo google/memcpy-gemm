@@ -14,8 +14,6 @@ filegroup(name = "empty")
 
 cc_toolchain(
     name = "static_toolchain",
-    toolchain_identifier = "static-toolchain",
-    toolchain_config = ":static_toolchain_config",
     all_files = ":empty",
     compiler_files = ":empty",
     dwp_files = ":empty",
@@ -23,4 +21,6 @@ cc_toolchain(
     objcopy_files = ":empty",
     strip_files = ":empty",
     supports_param_files = 0,
+    toolchain_config = ":static_toolchain_config",
+    toolchain_identifier = "static-toolchain",
 )
