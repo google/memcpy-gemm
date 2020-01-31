@@ -1,5 +1,9 @@
 build --cxxopt='-std=c++17'
 
-build:static --compiler=staticbuilder --cpu=k8
-build:static --crosstool_top=//toolchain:static
-build:static --host_crosstool_top=//toolchain:static
+# Suppress build warnings coming from the 'half' external library, which we
+# cannot modify without bringing it into the repository. It would be better to
+# do this in the 'half' build rule (to not blanket-suppress these warnings in
+# modules that we can do something about), but half is just a header, and so
+# doesn't get compiled except when included in other rules.
+build --cxxopt='-Wno-parentheses'
+build --cxxopt='-Wno-sign-compare'
