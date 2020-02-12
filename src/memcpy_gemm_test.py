@@ -31,8 +31,8 @@ MIN_FLOW_RATE = 0.0
 
 class MemcpyGemmTest(unittest.TestCase):
 
-  def setUp(self):
-    self.duration_s = 5
+  def setUp(self):  # pylint: disable=g-missing-super-call
+    self.duration_s = 3
     self.timeout_s = self.duration_s + 15
     exec_path = 'memcpy_gemm'
     self.memcpy_gemm_args = [
@@ -55,28 +55,89 @@ class MemcpyGemmTest(unittest.TestCase):
       nr_matches += 1
     self.assertGreater(nr_matches, 0)
 
-  def testSGEMM(self):
+  def testGEMMPrecision(self):
+    options = [
+        '--fp_precision=half', '--fp_precision=single', '--fp_precision=double'
+    ]
+    for opt in options:
+      args = self.memcpy_gemm_args + ['--gemm', '--N=1024'] + [opt]
+      result = subprocess.run(
+          args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+      self.assertEqual(result.returncode, 0)
+      self.ValidateOutput(result.stdout)
+
+  def testMatrixDimensions(self):
+    gemm_dimensions = ['--gemm', '--N=1024', '--M=1024', '--K=1024']
+    args = self.memcpy_gemm_args + gemm_dimensions
+    result = subprocess.run(
+        args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+    self.assertEqual(result.returncode, 0)
+    self.ValidateOutput(result.stdout)
+
+  def testMixedInputOutputPrecisions(self):
     args = self.memcpy_gemm_args + [
-        '--gemm',
-        '--fp_precision=single',
-        '--N=2048',
+        '--input_precision=single', '--output_precision=double',
+        '--compute_precision=half'
     ]
     result = subprocess.run(
         args, timeout=self.timeout_s, stdout=subprocess.PIPE)
     self.assertEqual(result.returncode, 0)
     self.ValidateOutput(result.stdout)
 
-  def testDGEMM(self):
+  def testGemmAlgorithms(self):
     args = self.memcpy_gemm_args + [
-        '--gemm',
-        '--fp_precision=double',
-        '--N=2048',
+        '--gemm', '--N=2048', '--algorithm=gemm_algo_3',
+        '--algorithm_tc=gemm_tensor_algo_7'
     ]
     result = subprocess.run(
         args, timeout=self.timeout_s, stdout=subprocess.PIPE)
     self.assertEqual(result.returncode, 0)
     self.ValidateOutput(result.stdout)
 
+  def testGEMMOptions(self):
+    options = [
+        '--trigger_period=1',
+        '--sync_flows=true',
+        '--nv_gaussian=true',
+    ]
+    for opt in options:
+      args = self.memcpy_gemm_args + ['--gemm', '--N=1024'] + [opt]
+      result = subprocess.run(
+          args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+      self.assertEqual(result.returncode, 0)
+      self.ValidateOutput(result.stdout)
+
+  def testMemcpyOptions(self):
+    options = [
+        '--wait_ns=100',
+        '--use_cudaDeviceEnablePeerAccess=false',
+        '--use_cudaMemcpyDefault=false',
+        '--use_cudaMemcpyPeerAsync=true',
+    ]
+    for opt in options:
+      args = self.memcpy_gemm_args + [opt]
+      result = subprocess.run(
+          args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+      self.assertEqual(result.returncode, 0)
+      self.ValidateOutput(result.stdout)
+
+  def testFlowModels(self):
+    options = ['--flow_model=thread-per-gpu', '--flow_model=event-poll']
+    for opt in options:
+      args = self.memcpy_gemm_args + [opt]
+      result = subprocess.run(
+          args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+      self.assertEqual(result.returncode, 0)
+      self.ValidateOutput(result.stdout)
+
+  def testHighTimeLowTime(self):
+    args = self.memcpy_gemm_args + [
+        '--gemm', '--N=1024', '--high_time=2', '--low_time=0'
+    ]
+    result = subprocess.run(
+        args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+    self.assertEqual(result.returncode, 0)
+    self.ValidateOutput(result.stdout)
 
 if __name__ == '__main__':
   unittest.main()

@@ -16,9 +16,10 @@
 
 #include <cstdint>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_format.h"
-
+#include "absl/strings/substitute.h"
 namespace {
 
 // This class is instantialized when registering a device to be used for GPU
@@ -36,116 +37,77 @@ class WithCUDADevice {
   int old_gpu_num_;
 };
 
-#if CUDA_VERSION >= 8000
 cudaDataType_t GetCudaComputeType(const std::string &compute_type) {
-  if (compute_type == "int32") {
-    return CUDA_R_32I;
-  } else if (compute_type == "half") {
-    return CUDA_R_16F;
-  } else if (compute_type == "single") {
-    return CUDA_R_32F;
-  } else if (compute_type == "double") {
-    return CUDA_R_64F;
-  }
+  static const absl::flat_hash_map<absl::string_view, cudaDataType_t>
+      compute_mapping{{"half", CUDA_R_16F},
+                      {"single", CUDA_R_32F},
+                      {"double", CUDA_R_64F},
+                      {"int8", CUDA_R_8I},
+                      {"int32", CUDA_R_32I}};
 
-  LOG(ERROR) << "Unsupported compute type, using double type.";
+  if (const auto it = compute_mapping.find(compute_type);
+      it != compute_mapping.end()) {
+    return it->second;
+  }
+  LOG(ERROR) << absl::Substitute(
+      "Unsupported compute type '$0', using double type.", compute_type);
   return CUDA_R_64F;
 }
 
 cublasGemmAlgo_t GetGemmAlgorithm(const std::string &algorithm) {
-  if (algorithm == "gemm_algo_default") {
-    return CUBLAS_GEMM_DFALT;
-  } else if (algorithm == "gemm_algo_0") {
-    return CUBLAS_GEMM_ALGO0;
-  } else if (algorithm == "gemm_algo_1") {
-    return CUBLAS_GEMM_ALGO1;
-  } else if (algorithm == "gemm_algo_2") {
-    return CUBLAS_GEMM_ALGO2;
-  } else if (algorithm == "gemm_algo_3") {
-    return CUBLAS_GEMM_ALGO3;
-  } else if (algorithm == "gemm_algo_4") {
-    return CUBLAS_GEMM_ALGO4;
-  } else if (algorithm == "gemm_algo_5") {
-    return CUBLAS_GEMM_ALGO5;
-  } else if (algorithm == "gemm_algo_6") {
-    return CUBLAS_GEMM_ALGO6;
-  } else if (algorithm == "gemm_algo_7") {
-    return CUBLAS_GEMM_ALGO7;
-#if CUDA_VERSION >= 9000
-  } else if (algorithm == "gemm_algo_8") {
-    return CUBLAS_GEMM_ALGO8;
-  } else if (algorithm == "gemm_algo_9") {
-    return CUBLAS_GEMM_ALGO9;
-  } else if (algorithm == "gemm_algo_10") {
-    return CUBLAS_GEMM_ALGO10;
-  } else if (algorithm == "gemm_algo_11") {
-    return CUBLAS_GEMM_ALGO11;
-  } else if (algorithm == "gemm_algo_12") {
-    return CUBLAS_GEMM_ALGO12;
-  } else if (algorithm == "gemm_algo_13") {
-    return CUBLAS_GEMM_ALGO13;
-  } else if (algorithm == "gemm_algo_14") {
-    return CUBLAS_GEMM_ALGO14;
-  } else if (algorithm == "gemm_algo_15") {
-    return CUBLAS_GEMM_ALGO15;
-  } else if (algorithm == "gemm_algo_16") {
-    return CUBLAS_GEMM_ALGO16;
-  } else if (algorithm == "gemm_algo_17") {
-    return CUBLAS_GEMM_ALGO17;
-  } else if (algorithm == "gemm_tensor_algo_default") {
-    return CUBLAS_GEMM_DFALT_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_0") {
-    return CUBLAS_GEMM_ALGO0_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_1") {
-    return CUBLAS_GEMM_ALGO1_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_2") {
-    return CUBLAS_GEMM_ALGO2_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_3") {
-    return CUBLAS_GEMM_ALGO3_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_4") {
-    return CUBLAS_GEMM_ALGO4_TENSOR_OP;
-#endif  // #if CUDA_VERSION >= 9000
+  static const absl::flat_hash_map<absl::string_view, cublasGemmAlgo_t>
+      algorithm_mapping {
+    {"gemm_algo_default", CUBLAS_GEMM_DFALT},
+        {"gemm_algo_0", CUBLAS_GEMM_ALGO0}, {"gemm_algo_1", CUBLAS_GEMM_ALGO1},
+        {"gemm_algo_2", CUBLAS_GEMM_ALGO2}, {"gemm_algo_3", CUBLAS_GEMM_ALGO3},
+        {"gemm_algo_4", CUBLAS_GEMM_ALGO4}, {"gemm_algo_5", CUBLAS_GEMM_ALGO5},
+        {"gemm_algo_6", CUBLAS_GEMM_ALGO6}, {"gemm_algo_7", CUBLAS_GEMM_ALGO7},
+        {"gemm_algo_8", CUBLAS_GEMM_ALGO8}, {"gemm_algo_9", CUBLAS_GEMM_ALGO9},
+        {"gemm_algo_10", CUBLAS_GEMM_ALGO10},
+        {"gemm_algo_11", CUBLAS_GEMM_ALGO11},
+        {"gemm_algo_12", CUBLAS_GEMM_ALGO12},
+        {"gemm_algo_13", CUBLAS_GEMM_ALGO13},
+        {"gemm_algo_14", CUBLAS_GEMM_ALGO14},
+        {"gemm_algo_15", CUBLAS_GEMM_ALGO15},
+        {"gemm_algo_16", CUBLAS_GEMM_ALGO16},
+        {"gemm_algo_17", CUBLAS_GEMM_ALGO17},
 #if CUDA_VERSION >= 10000
-  } else if (algorithm == "gemm_algo_18") {
-    return CUBLAS_GEMM_ALGO18;
-  } else if (algorithm == "gemm_algo_19") {
-    return CUBLAS_GEMM_ALGO19;
-  } else if (algorithm == "gemm_algo_20") {
-    return CUBLAS_GEMM_ALGO20;
-  } else if (algorithm == "gemm_algo_21") {
-    return CUBLAS_GEMM_ALGO21;
-  } else if (algorithm == "gemm_algo_22") {
-    return CUBLAS_GEMM_ALGO22;
-  } else if (algorithm == "gemm_algo_23") {
-    return CUBLAS_GEMM_ALGO23;
-  } else if (algorithm == "gemm_tensor_algo_5") {
-    return CUBLAS_GEMM_ALGO5_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_6") {
-    return CUBLAS_GEMM_ALGO6_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_7") {
-    return CUBLAS_GEMM_ALGO7_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_8") {
-    return CUBLAS_GEMM_ALGO8_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_9") {
-    return CUBLAS_GEMM_ALGO9_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_10") {
-    return CUBLAS_GEMM_ALGO10_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_11") {
-    return CUBLAS_GEMM_ALGO11_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_12") {
-    return CUBLAS_GEMM_ALGO12_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_13") {
-    return CUBLAS_GEMM_ALGO13_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_14") {
-    return CUBLAS_GEMM_ALGO14_TENSOR_OP;
-  } else if (algorithm == "gemm_tensor_algo_15") {
-    return CUBLAS_GEMM_ALGO15_TENSOR_OP;
-#endif  // #if CUDA_VERSION >= 10000
+        {"gemm_algo_18", CUBLAS_GEMM_ALGO18},
+        {"gemm_algo_19", CUBLAS_GEMM_ALGO19},
+        {"gemm_algo_20", CUBLAS_GEMM_ALGO20},
+        {"gemm_algo_21", CUBLAS_GEMM_ALGO21},
+        {"gemm_algo_22", CUBLAS_GEMM_ALGO22},
+        {"gemm_algo_23", CUBLAS_GEMM_ALGO23},
+#endif  // CUDA_VERSION >= 10000
+        {"gemm_tensor_algo_default", CUBLAS_GEMM_DFALT_TENSOR_OP},
+        {"gemm_tensor_algo_0", CUBLAS_GEMM_ALGO0_TENSOR_OP},
+        {"gemm_tensor_algo_1", CUBLAS_GEMM_ALGO1_TENSOR_OP},
+        {"gemm_tensor_algo_2", CUBLAS_GEMM_ALGO2_TENSOR_OP},
+        {"gemm_tensor_algo_3", CUBLAS_GEMM_ALGO3_TENSOR_OP},
+        {"gemm_tensor_algo_4", CUBLAS_GEMM_ALGO4_TENSOR_OP},
+#if CUDA_VERSION >= 10000
+        {"gemm_tensor_algo_5", CUBLAS_GEMM_ALGO5_TENSOR_OP},
+        {"gemm_tensor_algo_6", CUBLAS_GEMM_ALGO6_TENSOR_OP},
+        {"gemm_tensor_algo_7", CUBLAS_GEMM_ALGO7_TENSOR_OP},
+        {"gemm_tensor_algo_8", CUBLAS_GEMM_ALGO8_TENSOR_OP},
+        {"gemm_tensor_algo_9", CUBLAS_GEMM_ALGO9_TENSOR_OP},
+        {"gemm_tensor_algo_10", CUBLAS_GEMM_ALGO10_TENSOR_OP},
+        {"gemm_tensor_algo_11", CUBLAS_GEMM_ALGO11_TENSOR_OP},
+        {"gemm_tensor_algo_12", CUBLAS_GEMM_ALGO12_TENSOR_OP},
+        {"gemm_tensor_algo_13", CUBLAS_GEMM_ALGO13_TENSOR_OP},
+        {"gemm_tensor_algo_14", CUBLAS_GEMM_ALGO14_TENSOR_OP},
+        {"gemm_tensor_algo_15", CUBLAS_GEMM_ALGO15_TENSOR_OP},
+#endif  // CUDA_VERSION >= 10000
+  };
+
+  if (const auto it = algorithm_mapping.find(algorithm);
+      it != algorithm_mapping.end()) {
+    return it->second;
   }
-  LOG(ERROR) << "Unsupported algorithm, using default.";
+  LOG(ERROR) << absl::Substitute(
+      "Unsupported algorithm type '$0', using default.", algorithm);
   return CUBLAS_GEMM_DFALT;
 }
-#endif  // #if CUDA_VERSION >= 8000
 }  //  namespace
 
 namespace platforms_gpus {
@@ -160,7 +122,6 @@ CudaCublasInterface<half_float::half, half_float::half>::MatrixMultiComputation(
     const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
     const void *A, const void *B, const void *beta, void *C,
     int compute_capability_major) {
-#if CUDA_VERSION >= 8000
     cublasStatus_t cublas_err;
     cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
                       transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
@@ -179,8 +140,6 @@ CudaCublasInterface<half_float::half, half_float::half>::MatrixMultiComputation(
                       GetGemmAlgorithm(algorithm_tc));
     }
     return cublas_err;
-#endif
-  return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
 template <>
@@ -191,7 +150,6 @@ CudaCublasInterface<half_float::half, float>::MatrixMultiComputation(
     const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
     const void *A, const void *B, const void *beta, void *C,
     int compute_capability_major) {
-#if CUDA_VERSION >= 8000
   if (compute_capability_major >= 5) {
     cublasStatus_t cublas_err;
     cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
@@ -211,10 +169,8 @@ CudaCublasInterface<half_float::half, float>::MatrixMultiComputation(
                       GetGemmAlgorithm(algorithm_tc));
     }
     return cublas_err;
-  } else {
-    LOG(ERROR) << "This GPU doesn't support half data type";
   }
-#endif
+  LOG(ERROR) << "This GPU doesn't support half data type";
   return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 
@@ -225,7 +181,6 @@ cublasStatus_t CudaCublasInterface<float, float>::MatrixMultiComputation(
     const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
     const void *A, const void *B, const void *beta, void *C,
     int compute_capability_major) {
-#if CUDA_VERSION >= 8000
   if (compute_capability_major >= 5) {
     cublasStatus_t cublas_err;
     cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
@@ -246,7 +201,7 @@ cublasStatus_t CudaCublasInterface<float, float>::MatrixMultiComputation(
     }
     return cublas_err;
   }
-#endif
+  // compute capability < 5
   return cublasSgemm(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
                    transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
                    dim_size_n, dim_size_k,
@@ -264,7 +219,6 @@ cublasStatus_t CudaCublasInterface<double, double>::MatrixMultiComputation(
     const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
     const void *A, const void *B, const void *beta, void *C,
     int compute_capability_major) {
-#if CUDA_VERSION >= 8000
   if (compute_capability_major >= 5) {
       cublasStatus_t cublas_err;
       cublas_err =  cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
@@ -285,7 +239,7 @@ cublasStatus_t CudaCublasInterface<double, double>::MatrixMultiComputation(
     }
     return cublas_err;
   }
-#endif
+  // Compute capability < 5
   return cublasDgemm(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
                      dim_size_n, dim_size_k,
@@ -296,7 +250,6 @@ cublasStatus_t CudaCublasInterface<double, double>::MatrixMultiComputation(
                    reinterpret_cast<double *>(C), dim_size_m);
 }
 
-// TODO: Use builder pattern to avoid the long parameter list
 template <>
 cublasStatus_t CudaCublasInterface<int8_t, int32_t>::MatrixMultiComputation(
     size_t dim_size_m, size_t dim_size_n, size_t dim_size_k, bool transa,
@@ -304,7 +257,6 @@ cublasStatus_t CudaCublasInterface<int8_t, int32_t>::MatrixMultiComputation(
     const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
     const void *A, const void *B, const void *beta, void *C,
     int compute_capability_major) {
-#if CUDA_VERSION >= 8000
   if (compute_capability_major >= 5) {
       cublasStatus_t cublas_err;
       cublas_err =  cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
@@ -325,7 +277,7 @@ cublasStatus_t CudaCublasInterface<int8_t, int32_t>::MatrixMultiComputation(
     }
     return cublas_err;
   }
-#endif
+  LOG(ERROR) << "This GPU doesn't support the int8 data type";
   return CUBLAS_STATUS_NOT_SUPPORTED;
 }
 

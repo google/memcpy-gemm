@@ -80,6 +80,7 @@ cc_binary(
 
 py_test(
     name = "memcpy_gemm_test",
+    size = "medium",
     srcs = ["src/memcpy_gemm_test.py"],
     data = [
         ":memcpy_gemm",
@@ -121,8 +122,10 @@ cc_library(
     deps = [
         ":matrix_lib",
         ":multi_gemm_lib",
+        "@absl//absl/container:flat_hash_map",
         "@absl//absl/memory",
         "@absl//absl/random",
+        "@absl//absl/strings",
         "@absl//absl/strings:str_format",
         "@cuda//:cublas_static",
         "@cuda//:cuda_headers",

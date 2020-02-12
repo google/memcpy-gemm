@@ -8,3 +8,7 @@ build --cxxopt='-std=c++17'
 build --cxxopt='-Wno-parentheses'
 build --cxxopt='-Wno-sign-compare'
 
+# Use --static to build without c++ or libgcc dynamic dependencies
+build:static --compiler=staticbuilder
+build:static --crosstool_top=//toolchain:static
+build:static --host_crosstool_top=//toolchain:static
