@@ -104,30 +104,4 @@ extern template class CudaRandomMatrix<half_float::half>;
 extern template class CudaRandomMatrix<float>;
 extern template class CudaRandomMatrix<double>;
 
-template <class T>
-class GpuContext {
- public:
-  GpuContext(HostContext<T> *h, int gpu_num);
-
-  void StreamSynchronize() { CUDA_CHECK(cudaStreamSynchronize(stream_)); }
-
-  void LaunchKernel();
-
-  ~GpuContext();
-
- protected:
-  int gpu_num_;
-  size_t dim_size_m_;
-  size_t dim_size_n_;
-  size_t dim_size_k_;
-  bool transa_;
-  bool transb_;
-  cudaStream_t stream_;
-  cublasHandle_t cublas_handle_;
-  T *dev_constants_;
-  T *dev_a_;
-  T *dev_b_;
-  T *dev_c_;
-};
-
 #endif  // PLATFORMS_GPUS_TESTING_NVIDIA_MULTI_GEMM_LIB_H_

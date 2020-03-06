@@ -15,6 +15,7 @@
 #include "src/gemm_test_lib.h"
 
 #include "absl/memory/memory.h"
+#include "absl/strings/substitute.h"
 #include "src/gemm_test_lib_internal.h"
 #include "src/matrix_lib.h"
 #include "include/half.hpp"
@@ -35,15 +36,19 @@ namespace platforms_gpus {
 namespace gemm_test {
 
 // Currently cublasGemmEx() supports: "int8:int32", "half:half", "half:float",
-// "float:float", and "double:double" precision combinations.
-// Caller of this function has the ownership of options, it should be kept valid
-// during the construction of HostContext.
+// "float:float", "double:double", "int8:int32", and "int8:float" precision
+// combinations. The caller of this function has the ownership of options,
+// it should be kept valid during the construction of HostContext.
 std::unique_ptr<HostContext> HostContext::Create(ContextOption *options) {
   ProcessContextOptionPrecision(options);
 
   if (options->data_type_in == "int8" && options->data_type_out == "int32") {
     return absl::make_unique<internal::MixedPrecisionHostContext<
         int8_t, int32_t>>(*options);
+  } else if (options->data_type_in == "int8" &&
+             options->data_type_out == "single") {
+    return absl::make_unique<
+        internal::MixedPrecisionHostContext<int8_t, float>>(*options);
   } else if (options->data_type_in == "half" &&
              options->data_type_out == "half") {
     return absl::make_unique<internal::MixedPrecisionHostContext<
@@ -62,7 +67,9 @@ std::unique_ptr<HostContext> HostContext::Create(ContextOption *options) {
         internal::MixedPrecisionHostContext<double, double>>(*options);
   }
 
-  LOG(ERROR) << "Unsupported input/output precision combination";
+  LOG(ERROR) << absl::Substitute(
+      "Unsupported input/output precision combination of $0:$1",
+      options->data_type_in, options->data_type_out);
   return nullptr;
 }
 

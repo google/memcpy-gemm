@@ -19,7 +19,10 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
+#include "src/matrix_lib.h"
+
 namespace {
 
 // This class is instantialized when registering a device to be used for GPU
@@ -37,7 +40,7 @@ class WithCUDADevice {
   int old_gpu_num_;
 };
 
-cudaDataType_t GetCudaComputeType(const std::string &compute_type) {
+cudaDataType_t GetCudaComputeType(absl::string_view compute_type) {
   static const absl::flat_hash_map<absl::string_view, cudaDataType_t>
       compute_mapping{{"half", CUDA_R_16F},
                       {"single", CUDA_R_32F},
@@ -54,7 +57,7 @@ cudaDataType_t GetCudaComputeType(const std::string &compute_type) {
   return CUDA_R_64F;
 }
 
-cublasGemmAlgo_t GetGemmAlgorithm(const std::string &algorithm) {
+cublasGemmAlgo_t GetGemmAlgorithm(absl::string_view algorithm) {
   static const absl::flat_hash_map<absl::string_view, cublasGemmAlgo_t>
       algorithm_mapping {
     {"gemm_algo_default", CUBLAS_GEMM_DFALT},
@@ -108,177 +111,99 @@ cublasGemmAlgo_t GetGemmAlgorithm(const std::string &algorithm) {
       "Unsupported algorithm type '$0', using default.", algorithm);
   return CUBLAS_GEMM_DFALT;
 }
+
+// Detects the compute capability of GPU 0.
+float GetComputeCapability() {
+  WithCUDADevice device(0);
+  cudaDeviceProp dev_prop;
+  CUDA_CHECK(cudaGetDeviceProperties(&dev_prop, 0));
+  return dev_prop.major;
+}
+
 }  //  namespace
 
 namespace platforms_gpus {
 namespace gemm_test {
 namespace internal {
 
-template <>
-cublasStatus_t
-CudaCublasInterface<half_float::half, half_float::half>::MatrixMultiComputation(
-    size_t dim_size_m, size_t dim_size_n, size_t dim_size_k, bool transa,
-    bool transb, const std::string &compute_type, const std::string &algorithm,
-    const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
-    const void *A, const void *B, const void *beta, void *C,
-    int compute_capability_major) {
-    cublasStatus_t cublas_err;
-    cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_16F, dim_size_m,
-                      B, CUDA_R_16F, dim_size_k, beta, C, CUDA_R_16F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm));
-    if (cublas_err != CUBLAS_STATUS_SUCCESS)
-        return cublas_err;
-    if (!algorithm_tc.empty()) {
-        cublas_err =  cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_16F, dim_size_m,
-                      B, CUDA_R_16F, dim_size_k, beta, C, CUDA_R_16F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm_tc));
-    }
-    return cublas_err;
+std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
+    absl::string_view compute_type, const float compute_capability) {
+  // If on a capable machine, use the modern cublasGemmEx() wrapper which can
+  // handle any combination of data types.
+  if (compute_capability >= 5.0) {
+    LOG(INFO) << "Using cublasGemmEx for GEMM computation";
+    return absl::make_unique<CudaCublasInterface>();
+  }
+  // If on an older machine, the data type determines the function to be called.
+  // Note that we don't have to worry about mixed precision, since older devices
+  // do not support it.
+  if (compute_type == "single") {
+    LOG(INFO) << "Using cublasSGemm for GEMM computation";
+    return absl::make_unique<LegacyCudaCublasInterface<float>>();
+  } else if (compute_type == "double") {
+    LOG(INFO) << "Using cublasDGemm for GEMM computation";
+    return absl::make_unique<LegacyCudaCublasInterface<double>>();
+  }
+  LOG(ERROR) << absl::Substitute(
+      "Unsupported data type $0 for legacy cublas interface", compute_type);
+  return nullptr;
+}
+
+cublasStatus_t CudaCublasInterface::MatrixMultiComputation(
+    const ContextOption &context_options, cublasHandle_t handle,
+    const void *alpha, const void *A, const void *B, const void *beta,
+    void *C) {
+  return cublasGemmEx(handle,
+                      // Transpose before multiplication.
+                      context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
+                      context_options.transb ? CUBLAS_OP_T : CUBLAS_OP_N,
+                      // Matrix dimensions,
+                      context_options.dim_size_m, context_options.dim_size_n,
+                      context_options.dim_size_k,
+                      // Input arrays and scaling factors.
+                      alpha, A,
+                      GetCudaComputeType(context_options.data_type_in),
+                      context_options.dim_size_m, B,
+                      GetCudaComputeType(context_options.data_type_in),
+                      // Output array options.
+                      context_options.dim_size_k, beta, C,
+                      GetCudaComputeType(context_options.data_type_out),
+                      context_options.dim_size_m,
+                      // Compute options.
+                      GetCudaComputeType(context_options.compute_type),
+                      GetGemmAlgorithm(context_options.algorithm));
 }
 
 template <>
-cublasStatus_t
-CudaCublasInterface<half_float::half, float>::MatrixMultiComputation(
-    size_t dim_size_m, size_t dim_size_n, size_t dim_size_k, bool transa,
-    bool transb, const std::string &compute_type, const std::string &algorithm,
-    const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
-    const void *A, const void *B, const void *beta, void *C,
-    int compute_capability_major) {
-  if (compute_capability_major >= 5) {
-    cublasStatus_t cublas_err;
-    cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_16F, dim_size_m,
-                      B, CUDA_R_16F, dim_size_k, beta, C, CUDA_R_32F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm));
-    if (cublas_err != CUBLAS_STATUS_SUCCESS)
-        return cublas_err;
-    if (!algorithm_tc.empty()) {
-        cublas_err =  cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_16F, dim_size_m,
-                      B, CUDA_R_16F, dim_size_k, beta, C, CUDA_R_32F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm_tc));
-    }
-    return cublas_err;
-  }
-  LOG(ERROR) << "This GPU doesn't support half data type";
-  return CUBLAS_STATUS_NOT_SUPPORTED;
+cublasStatus_t LegacyCudaCublasInterface<float>::MatrixMultiComputation(
+    const ContextOption &context_options, cublasHandle_t handle,
+    const void *alpha, const void *A, const void *B, const void *beta,
+    void *C) {
+  return cublasSgemm(
+      handle, context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
+      context_options.transb ? CUBLAS_OP_T : CUBLAS_OP_N,
+      context_options.dim_size_m, context_options.dim_size_n,
+      context_options.dim_size_k, reinterpret_cast<const float *>(alpha),
+      reinterpret_cast<const float *>(A), context_options.dim_size_m,
+      reinterpret_cast<const float *>(B), context_options.dim_size_k,
+      reinterpret_cast<const float *>(beta), reinterpret_cast<float *>(C),
+      context_options.dim_size_m);
 }
 
 template <>
-cublasStatus_t CudaCublasInterface<float, float>::MatrixMultiComputation(
-    size_t dim_size_m, size_t dim_size_n, size_t dim_size_k, bool transa,
-    bool transb, const std::string &compute_type, const std::string &algorithm,
-    const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
-    const void *A, const void *B, const void *beta, void *C,
-    int compute_capability_major) {
-  if (compute_capability_major >= 5) {
-    cublasStatus_t cublas_err;
-    cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_32F, dim_size_m,
-                      B, CUDA_R_32F, dim_size_k, beta, C, CUDA_R_32F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm));
-    if (cublas_err != CUBLAS_STATUS_SUCCESS)
-        return cublas_err;
-    if (!algorithm_tc.empty()) {
-        cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_32F, dim_size_m,
-                      B, CUDA_R_32F, dim_size_k, beta, C, CUDA_R_32F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm_tc));
-    }
-    return cublas_err;
-  }
-  // compute capability < 5
-  return cublasSgemm(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                   transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                   dim_size_n, dim_size_k,
-                   reinterpret_cast<const float *>(alpha),
-                   reinterpret_cast<const float *>(A), dim_size_m,
-                   reinterpret_cast<const float *>(B), dim_size_k,
-                   reinterpret_cast<const float *>(beta),
-                   reinterpret_cast<float *>(C), dim_size_m);
-}
-
-template <>
-cublasStatus_t CudaCublasInterface<double, double>::MatrixMultiComputation(
-    size_t dim_size_m, size_t dim_size_n, size_t dim_size_k, bool transa,
-    bool transb, const std::string &compute_type, const std::string &algorithm,
-    const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
-    const void *A, const void *B, const void *beta, void *C,
-    int compute_capability_major) {
-  if (compute_capability_major >= 5) {
-      cublasStatus_t cublas_err;
-      cublas_err =  cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_64F, dim_size_m,
-                      B, CUDA_R_64F, dim_size_k, beta, C, CUDA_R_64F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm));
-      if (cublas_err != CUBLAS_STATUS_SUCCESS)
-          return cublas_err;
-      if (!algorithm_tc.empty()) {
-        cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_64F, dim_size_m,
-                      B, CUDA_R_64F, dim_size_k, beta, C, CUDA_R_64F,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm_tc));
-    }
-    return cublas_err;
-  }
-  // Compute capability < 5
-  return cublasDgemm(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                     transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                     dim_size_n, dim_size_k,
-                   reinterpret_cast<const double *>(alpha),
-                   reinterpret_cast<const double *>(A), dim_size_m,
-                   reinterpret_cast<const double *>(B), dim_size_k,
-                   reinterpret_cast<const double *>(beta),
-                   reinterpret_cast<double *>(C), dim_size_m);
-}
-
-template <>
-cublasStatus_t CudaCublasInterface<int8_t, int32_t>::MatrixMultiComputation(
-    size_t dim_size_m, size_t dim_size_n, size_t dim_size_k, bool transa,
-    bool transb, const std::string &compute_type, const std::string &algorithm,
-    const std::string &algorithm_tc, cublasHandle_t handle, const void *alpha,
-    const void *A, const void *B, const void *beta, void *C,
-    int compute_capability_major) {
-  if (compute_capability_major >= 5) {
-      cublasStatus_t cublas_err;
-      cublas_err =  cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_8I, dim_size_m,
-                      B, CUDA_R_8I, dim_size_k, beta, C, CUDA_R_32I,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm));
-      if (cublas_err != CUBLAS_STATUS_SUCCESS)
-          return cublas_err;
-      if (!algorithm_tc.empty()) {
-        cublas_err = cublasGemmEx(handle, transa ? CUBLAS_OP_T : CUBLAS_OP_N,
-                      transb ? CUBLAS_OP_T : CUBLAS_OP_N, dim_size_m,
-                      dim_size_n, dim_size_k, alpha, A, CUDA_R_8I, dim_size_m,
-                      B, CUDA_R_8I, dim_size_k, beta, C, CUDA_R_32I,
-                      dim_size_m, GetCudaComputeType(compute_type),
-                      GetGemmAlgorithm(algorithm_tc));
-    }
-    return cublas_err;
-  }
-  LOG(ERROR) << "This GPU doesn't support the int8 data type";
-  return CUBLAS_STATUS_NOT_SUPPORTED;
+cublasStatus_t LegacyCudaCublasInterface<double>::MatrixMultiComputation(
+    const ContextOption &context_options, cublasHandle_t handle,
+    const void *alpha, const void *A, const void *B, const void *beta,
+    void *C) {
+  return cublasDgemm(
+      handle, context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
+      context_options.transb ? CUBLAS_OP_T : CUBLAS_OP_N,
+      context_options.dim_size_m, context_options.dim_size_n,
+      context_options.dim_size_k, reinterpret_cast<const double *>(alpha),
+      reinterpret_cast<const double *>(A), context_options.dim_size_m,
+      reinterpret_cast<const double *>(B), context_options.dim_size_k,
+      reinterpret_cast<const double *>(beta), reinterpret_cast<double *>(C),
+      context_options.dim_size_m);
 }
 
 template <typename P_in, typename P_out>
@@ -286,13 +211,13 @@ MixedPrecisionHostContext<P_in, P_out>::MixedPrecisionHostContext(
     const ContextOption &options)
     : MixedPrecisionHostContext<P_in, P_out>(
           options, absl::make_unique<CudaMemoryAllocator>(),
-          absl::make_unique<internal::CudaCublasInterface<P_in, P_out>>()) {}
+          SelectGemmInterface(options.compute_type, GetComputeCapability())) {}
 
 template <typename P_in, typename P_out>
 MixedPrecisionHostContext<P_in, P_out>::MixedPrecisionHostContext(
     const ContextOption &options,
     std::unique_ptr<MemoryAllocatorInterface> memory_allocator,
-    std::unique_ptr<CudaCublasInterface<P_in, P_out>> computation_interface)
+    std::unique_ptr<GpuComputationInterface> computation_interface)
     : HostContext(options),
       memory_allocator_(std::move(memory_allocator)),
       computation_interface_(std::move(computation_interface)),
@@ -344,20 +269,50 @@ void CopyScalingFactorsToDevice<half_float::half>(void **alpha, void **beta,
                              cudaMemcpyHostToDevice, stream));
 }
 
-void GenerateScalingFactor(
-    const ContextOption &options, void **alpha, void **beta,
-    const cudaStream_t &stream) {
-  if (options.compute_type == "int32") {
+void GenerateScalingFactor(absl::string_view compute_type, void **alpha,
+                           void **beta, const cudaStream_t &stream) {
+  if (compute_type == "int32") {
     CopyScalingFactorsToDevice<int32_t>(alpha, beta, stream);
-  } else if (options.compute_type == "half") {
+  } else if (compute_type == "half") {
     CopyScalingFactorsToDevice<half_float::half>(alpha, beta, stream);
-  } else if (options.compute_type == "single") {
+  } else if (compute_type == "single") {
     CopyScalingFactorsToDevice<float>(alpha, beta, stream);
-  } else if (options.compute_type == "double") {
+  } else if (compute_type == "double") {
     CopyScalingFactorsToDevice<double>(alpha, beta, stream);
   } else {
-    LOG(ERROR) << "Unsupported computeType for cublasGemmEx";
+    LOG(ERROR) << absl::Substitute(
+        "Unsupported computeType '$0' for cublasGemmEx", compute_type);
   }
+}
+
+template <typename InputPrecision, typename OutputPrecision>
+GpuDataHandler<InputPrecision, OutputPrecision>::~GpuDataHandler() {
+  // cudaFree is safe to call on already freed or unallocated memory, so no
+  // allocation tracking logic is needed.
+  cudaFree(input_a_);
+  cudaFree(input_b_);
+  cudaFree(output_);
+  // Alpha and beta were allocated as a size 2 array from alpha.
+  cudaFree(alpha_);
+}
+
+template <typename InputPrecision, typename OutputPrecision>
+void GpuDataHandler<InputPrecision, OutputPrecision>::Initialize(
+    const RandomMatrix<InputPrecision> *data_in_a,
+    const RandomMatrix<InputPrecision> *data_in_b, const cudaStream_t stream) {
+  GenerateScalingFactor(compute_type_, &alpha_, &beta_, stream);
+  const int num_bytes_a = data_in_a->SizeInBytes();
+  const int num_bytes_b = data_in_b->SizeInBytes();
+  CUDA_CHECK(cudaMalloc(&input_a_, num_bytes_a));
+  CUDA_CHECK(cudaMalloc(&input_b_, num_bytes_b));
+  const int n_bytes_out = data_in_a->GetDimSizeM() * data_in_b->GetDimSizeK() *
+                          sizeof(OutputPrecision);
+  CUDA_CHECK(cudaMalloc(&output_, n_bytes_out));
+
+  CUDA_CHECK(cudaMemcpyAsync(input_a_, data_in_a->Get(), num_bytes_a,
+                             cudaMemcpyHostToDevice, stream));
+  CUDA_CHECK(cudaMemcpyAsync(input_b_, data_in_b->Get(), num_bytes_b,
+                             cudaMemcpyHostToDevice, stream));
 }
 
 // Caller of this function has the ownership for pointers matrix_a_p, and
@@ -377,35 +332,20 @@ MixedPrecisionGpuContext<P_in, P_out>::MixedPrecisionGpuContext(
                                gpu_num_, dev_prop.pciDomainID,
                                dev_prop.pciBusID, dev_prop.pciDeviceID,
                                dev_prop.name);
-  compute_capability_major_rev_ = dev_prop.major;
   CUDA_CHECK(cudaStreamCreate(&stream_));
   CUBLAS_CHECK(cublasCreate(&cublas_handle_));
   CUBLAS_CHECK(cublasSetStream(cublas_handle_, stream_));
   CUBLAS_CHECK(
       cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
-  // place alpha and beta on the device so they don't have
-  // to be refetched in each iteration.
-  GenerateScalingFactor(options_, &dev_alpha_, &dev_beta_, stream_);
-  size_t nr_bytes_a = options_.dim_size_m * options_.dim_size_k * sizeof(P_in);
-  size_t nr_bytes_b = options_.dim_size_k * options_.dim_size_n * sizeof(P_in);
-  size_t nr_bytes_c = options_.dim_size_m * options_.dim_size_n * sizeof(P_out);
-  CUDA_CHECK(cudaMalloc(&dev_a_, nr_bytes_a));
-  CUDA_CHECK(cudaMalloc(&dev_b_, nr_bytes_b));
-  CUDA_CHECK(cudaMalloc(&dev_c_, nr_bytes_c));
-  CUDA_CHECK(cudaMemcpyAsync(dev_a_, matrix_a_p->Get(), nr_bytes_a,
-                             cudaMemcpyHostToDevice, stream_));
-  CUDA_CHECK(cudaMemcpyAsync(dev_b_, matrix_b_p->Get(), nr_bytes_b,
-                             cudaMemcpyHostToDevice, stream_));
+
+  data_handler_.SetComputeType(options_.compute_type);
+  data_handler_.SetGpuId(gpu_num_);
+  data_handler_.Initialize(matrix_a_p, matrix_b_p, stream_);
+  CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
 template <typename P_in, typename P_out>
 MixedPrecisionGpuContext<P_in, P_out>::~MixedPrecisionGpuContext() {
-  CUDA_CHECK(cudaFree(dev_a_));
-  CUDA_CHECK(cudaFree(dev_b_));
-  CUDA_CHECK(cudaFree(dev_c_));
-  // when allocating memory for alpha and beta togeter, with the address stored
-  // in dev_alpha_, so we only free dev_alpha_, but not dev_beta_.
-  CUDA_CHECK(cudaFree(dev_alpha_));
   CUDA_CHECK(cudaStreamDestroy(stream_));
 }
 
@@ -425,17 +365,26 @@ void MixedPrecisionGpuContext<P_in, P_out>::LaunchKernel() {
   WithCUDADevice device(gpu_num_);
 
   CUBLAS_CHECK(compute_interface_->MatrixMultiComputation(
-      options_.dim_size_m, options_.dim_size_n, options_.dim_size_k,
-      options_.transa, options_.transb, options_.compute_type,
-      options_.algorithm, options_.algorithm_tc, cublas_handle_, dev_alpha_,
-      dev_a_, dev_b_, dev_beta_, dev_c_, compute_capability_major_rev_));
+      options_, cublas_handle_, data_handler_.Alpha(), data_handler_.InputA(),
+      data_handler_.InputB(), data_handler_.Beta(), data_handler_.Output()));
 }
+
+template class LegacyCudaCublasInterface<float>;
+template class LegacyCudaCublasInterface<double>;
+
+template class GpuDataHandler<half_float::half, half_float::half>;
+template class GpuDataHandler<half_float::half, float>;
+template class GpuDataHandler<float, float>;
+template class GpuDataHandler<double, double>;
+template class GpuDataHandler<int8_t, int32_t>;
+template class GpuDataHandler<int8_t, float>;
 
 template class MixedPrecisionHostContext<half_float::half, half_float::half>;
 template class MixedPrecisionHostContext<half_float::half, float>;
 template class MixedPrecisionHostContext<float, float>;
 template class MixedPrecisionHostContext<double, double>;
 template class MixedPrecisionHostContext<int8_t, int32_t>;
+template class MixedPrecisionHostContext<int8_t, float>;
 
 }  // namespace internal
 }  // namespace gemm_test

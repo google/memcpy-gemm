@@ -66,3 +66,19 @@ cxx_bultin_include_directories variable, and add the path to your headers to the
 
 ## Running:
 To see the list of options of memcpy-gemm, type "/path/to/memcpy_gemm --help".
+
+### Supported compute types
+
+memcpy-gemm supports a variety of input/output/compute precisions. The specific
+supported precision depends on the GPU architecture and CUDA version. With CUDA
+9 or later, the following data type combinations are allowed (cc=compute capability
+of device).
+
+| `input_precision` | `output_precision` | `compute_precision` | `restrictions` | `Notes`
+| ----------------- | ------------------ | ------------------- | -------------- | -------
+| single            | single             | single              | none           | same as fp_precision = 'single'
+| double            | double             | double              | none           | same as fp_precision = 'double'
+| half              | half               | half                | cc >= 6.0      | same as fp_precision = 'half'
+| half              | single             | single              | cc >= 6.0      | commonly called 'mixed precision'
+| int8              | int32              | int32               | cc >= 7.0      |
+| int8              | single             | single              | cc >= 7.0      |

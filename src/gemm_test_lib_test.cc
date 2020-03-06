@@ -47,6 +47,16 @@ struct DoubleInDoubleOut {
   using Output = double;
 };
 
+struct IntInIntOut {
+  using Input = int8_t;
+  using Output = int32_t;
+};
+
+struct IntInFloatOut {
+  using Input = int8_t;
+  using Output = int32_t;
+};
+
 // This test verifies factory method of HostContext would fail to creates
 // MixedPrecisionHostContext with unsupported in/out precision combination.
 TEST(GemmTestLibTest, CreateHostContextFailed) {
@@ -96,8 +106,7 @@ TYPED_TEST_P(HostContextTest, CreateHostContextSuccess) {
   using OutputType = typename TypeParam::Output;
 
   auto memory_allocator = absl::make_unique<MockMemoryAllocator>();
-  auto cublas =
-      absl::make_unique<internal::CudaCublasInterface<InputType, OutputType>>();
+  auto cublas = absl::make_unique<internal::CudaCublasInterface>();
 
   size_t a_size = this->options_.dim_size_m * this->options_.dim_size_k;
   size_t b_size = this->options_.dim_size_k * this->options_.dim_size_n;
@@ -117,14 +126,12 @@ TYPED_TEST_P(HostContextTest, CreateHostContextSuccess) {
   EXPECT_EQ(this->options_.transb, host_context->GetTransb());
   EXPECT_EQ(this->options_.compute_type, host_context->GetComputeType());
   EXPECT_EQ(this->options_.algorithm, host_context->GetCublasAlgorithm());
-  EXPECT_EQ(this->options_.algorithm_tc,
-      host_context->GetCublasAlgorithmTensorCore());
 };
 
 REGISTER_TYPED_TEST_SUITE_P(HostContextTest, CreateHostContextSuccess);
 
 using MyTypes = ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
-                                 DoubleInDoubleOut>;
+                                 DoubleInDoubleOut, IntInIntOut, IntInFloatOut>;
 
 INSTANTIATE_TYPED_TEST_SUITE_P(MixPrecisionHostContextTest, HostContextTest,
                                MyTypes);

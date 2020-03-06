@@ -74,10 +74,30 @@ class MemcpyGemmTest(unittest.TestCase):
     self.assertEqual(result.returncode, 0)
     self.ValidateOutput(result.stdout)
 
-  def testMixedInputOutputPrecisions(self):
+  def testMixedHalfFloat(self):
     args = self.memcpy_gemm_args + [
-        '--input_precision=single', '--output_precision=double',
-        '--compute_precision=half'
+        '--gemm', '--input_precision=half', '--output_precision=single',
+        '--compute_precision=single', '--N=1024', '--M=1024', '--K=1024'
+    ]
+    result = subprocess.run(
+        args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+    self.assertEqual(result.returncode, 0)
+    self.ValidateOutput(result.stdout)
+
+  def testMixedIntInt(self):
+    args = self.memcpy_gemm_args + [
+        '--gemm', '--input_precision=int8', '--output_precision=int32',
+        '--compute_precision=int32', '--N=1024', '--M=1024', '--K=1024'
+    ]
+    result = subprocess.run(
+        args, timeout=self.timeout_s, stdout=subprocess.PIPE)
+    self.assertEqual(result.returncode, 0)
+    self.ValidateOutput(result.stdout)
+
+  def testMixedIntFloat(self):
+    args = self.memcpy_gemm_args + [
+        '--gemm', '--input_precision=int8', '--output_precision=single',
+        '--compute_precision=single', '--N=1024', '--M=1024', '--K=1024'
     ]
     result = subprocess.run(
         args, timeout=self.timeout_s, stdout=subprocess.PIPE)
@@ -86,8 +106,7 @@ class MemcpyGemmTest(unittest.TestCase):
 
   def testGemmAlgorithms(self):
     args = self.memcpy_gemm_args + [
-        '--gemm', '--N=2048', '--algorithm=gemm_algo_3',
-        '--algorithm_tc=gemm_tensor_algo_7'
+        '--gemm', '--N=2048', '--algorithm=gemm_algo_3'
     ]
     result = subprocess.run(
         args, timeout=self.timeout_s, stdout=subprocess.PIPE)

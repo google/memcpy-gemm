@@ -40,7 +40,7 @@ TEST_F(DistributionTestsTest, HotChicksAndersonDarling) {
   LoadChickData();
   double result;
   ASSERT_TRUE(DistributionTests::TestStatistic(
-      data_, DistributionTests::ANDERSON_DARLING, &result));
+      data_, DistributionTests::TestType::ANDERSON_DARLING, &result));
   // Correct value (to 3SF) from Goodness-of-Fit Techniques, p. 125
   EXPECT_NEAR(0.223, result, 0.0005);
 }
@@ -49,9 +49,29 @@ TEST_F(DistributionTestsTest, HotChicksCramerVonMises) {
   LoadChickData();
   double result;
   ASSERT_TRUE(DistributionTests::TestStatistic(
-      data_, DistributionTests::CRAMER_VON_MISES, &result));
+      data_, DistributionTests::TestType::CRAMER_VON_MISES, &result));
   // Correct value (to 3SF) from Goodness-of-Fit Techniques, p. 125
   EXPECT_NEAR(0.035, result, 0.0005);
+}
+
+TEST_F(DistributionTestsTest, NoSamples) {
+  double result;
+  ASSERT_FALSE(DistributionTests::TestStatistic(
+      {}, DistributionTests::TestType::CRAMER_VON_MISES, &result));
+}
+
+TEST_F(DistributionTestsTest, NoVariance) {
+  double result;
+  data_ = {5, 5, 5, 5};
+  ASSERT_FALSE(DistributionTests::TestStatistic(
+      data_, DistributionTests::TestType::CRAMER_VON_MISES, &result));
+}
+
+TEST_F(DistributionTestsTest, BadMetric) {
+  LoadChickData();
+  double result;
+  ASSERT_FALSE(DistributionTests::TestStatistic(
+      data_, DistributionTests::TestType(3), &result));
 }
 
 }  // namespace

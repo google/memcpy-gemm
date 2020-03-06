@@ -27,17 +27,26 @@ namespace {
 
 using half_float::half;
 
+// Converts types to double. For the case of integers,
+// converts to a double within the range of -1, 1, scaled
+// to the limits of the type.
 template <typename T>
 double ConvertToDouble(T data) {
   return static_cast<double>(data);
 }
 
-template <>
-double ConvertToDouble(half data) {
-  return half_float::detail::half2float<double>(data);
+// Converts an integer type to double, and scales it down from its original
+// numeric limits to the range of [-1, 1]
+template <typename T, typename = std::enable_if_t<std::is_integral_v<T> &&
+                                                  std::is_signed_v<T>>>
+double IntTypeToBoundDouble(const T input) {
+  // This should bound correctly for 2's complement integers
+  static constexpr double scale_factor =
+      -1 * static_cast<double>(std::numeric_limits<T>::min());
+  return static_cast<double>(input) / scale_factor;
 }
 
-// Calculate A^2 value defiend in ANDERSON_DARLING method, the value is saved
+// Calculate A^2 value defined in ANDERSON_DARLING method, the value is saved
 // to result.
 template <typename T>
 bool TestNormalDistribution(const RandomMatrix<T> &matrix, double *result) {
@@ -52,7 +61,8 @@ bool TestNormalDistribution(const RandomMatrix<T> &matrix, double *result) {
   // sort data before pass it into DistributionTests::TestStatistic
   std::sort(samples.begin(), samples.end());
   return platforms_gpus::DistributionTests::TestStatistic(
-      samples, platforms_gpus::DistributionTests::ANDERSON_DARLING, result);
+      samples, platforms_gpus::DistributionTests::TestType::ANDERSON_DARLING,
+      result);
 }
 
 // Determine whether the values in matrix follow Uniform distribution.
@@ -68,7 +78,12 @@ bool TestUniformDistribution(const RandomMatrix<T> &matrix,
 
   // convert matric into a vector with "double" data type
   for (int j = 0; j < count; ++j, ++data_p) {
-    double cur_data = ConvertToDouble<T>(*data_p);
+    double cur_data;
+    if constexpr (std::is_integral_v<T>) {
+      cur_data = IntTypeToBoundDouble(*data_p);
+    } else {
+      cur_data = ConvertToDouble<T>(*data_p);
+    }
     EXPECT_GE(1.0, cur_data);
     EXPECT_LE(-1.0, cur_data);
 
@@ -83,6 +98,25 @@ bool TestUniformDistribution(const RandomMatrix<T> &matrix,
   }
 
   return chi_squared <= chi_squared_threshold;
+}
+
+// Allocations always fail, allowing testing of failure path.
+template <typename T>
+class FakeAllocationMatrix : public RandomMatrix<T> {
+ public:
+  FakeAllocationMatrix() : RandomMatrix<T>(1024, 1024) {}
+
+ protected:
+  double *Allocate(size_t nr_bytes) override { return nullptr; }
+
+ private:
+  std::unique_ptr<double[]> internal_allocation_;
+};
+
+TEST(MatrixTests, MatrixAllocationFailureHandled) {
+  FakeAllocationMatrix<double> matrix;
+  absl::BitGen rng;
+  EXPECT_FALSE(matrix.Initialize(&rng, 1, false));
 }
 
 template <class T>
@@ -134,7 +168,7 @@ TYPED_TEST(MatrixTest, MatrixPseudoRandomDataGeneration) {
 TYPED_TEST(MatrixTest, MatrixGaussianDataGeneration) {
   double result;
   int m = 120;
-  int k = 65;
+  int k = 120;
   absl::BitGen rng;
   // Construct a m by k matrix.
   RandomMatrix<TypeParam> test_matrix(m, k);
@@ -142,20 +176,21 @@ TYPED_TEST(MatrixTest, MatrixGaussianDataGeneration) {
   test_matrix.Initialize(&rng, 3.0, true);
   // Returning "true" only means the test had been performed successfully,
   // it doesn't mean the data is with Gaussian distribution.
+
   EXPECT_TRUE(TestNormalDistribution(test_matrix, &result));
   // Normality is rejected if result exceeds 1.035 at 1% significance levels.
   // Reference: https://en.wikipedia.org/wiki/Anderson%E2%80%93Darling_test
-  EXPECT_TRUE(result < 1.035);
+  EXPECT_LT(result, 1.035);
 }
 
 // This test verifies that MatrixLib generates uniform random data properly.
 TYPED_TEST(MatrixTest, MatrixUniformDataGeneration) {
-  int m = 60;
-  int k = 80;
+  int m = 120;
+  int k = 120;
   absl::BitGen rng;
 
   // Construct a m by k matrix.
-  RandomMatrix<double> test_matrix(m, k);
+  RandomMatrix<TypeParam> test_matrix(m, k);
   // Generate random date with uniform distribution.
   test_matrix.Initialize(&rng, 1.0, false);
   // Check whether data in the matrix "almost certainly" follow Uniform
@@ -163,6 +198,35 @@ TYPED_TEST(MatrixTest, MatrixUniformDataGeneration) {
   // 4799 degrees of freedom (m * k - 1).
   const double threshold = 5172;
   EXPECT_TRUE(TestUniformDistribution(test_matrix, threshold));
+}
+
+// int8 does not support Gaussian filling. Rather than have 2
+// typed test suites to differentiate, we'll run those tests manually.
+TEST(MatrixInt8Test, UniformFill) {
+  int m = 60;
+  int k = 80;
+  absl::BitGen rng;
+
+  RandomMatrix<int8_t> test_matrix(m, k);
+  test_matrix.Initialize(&rng, 1.0, false);
+  // Check whether data in the matrix "almost certainly" follow Uniform
+  // distribution. The threshold is for p > 0.0001, or one in 10,000, for
+  // 4799 degrees of freedom (m * k - 1).
+  const double threshold = 5172;
+  EXPECT_TRUE(TestUniformDistribution(test_matrix, threshold));
+}
+
+TEST(MatrixInt8Test, FailGaussianFill) {
+  int m = 60;
+  int k = 80;
+  absl::BitGen rng;
+
+  RandomMatrix<int8_t> test_matrix(m, k);
+  test_matrix.Initialize(&rng, 1.0, true);
+  // With an unrandomized initialized array, a uniformity test should
+  // always fail.
+  const double threshold = 5172;
+  EXPECT_FALSE(TestUniformDistribution(test_matrix, threshold));
 }
 
 }  // namespace

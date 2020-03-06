@@ -25,7 +25,7 @@ namespace platforms_gpus {
 
 class DistributionTests {
  public:
-  typedef enum {
+  enum class TestType {
     // The Anderson-Darling statistic is a robust test of whether a set of
     // values are drawn from a Normal distribution. No particular values of the
     // distribution are assumed.
@@ -43,7 +43,7 @@ class DistributionTests {
     // For more information, see
     // http://en.wikipedia.org/wiki/Cram%C3%A9r%E2%80%93von_Mises_criterion
     CRAMER_VON_MISES,
-  } TestType;
+  };
 
   // Computes the test statistic for the specified normality test.
   // REQUIRES: samples sorted into ascending order; samples does not contain
