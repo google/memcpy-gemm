@@ -225,8 +225,8 @@ class ComputeStream : public BaseComputeStream {
   ComputeStream(std::shared_ptr<HostContext<T>> host_context, int gpu_number,
                 const PulseBarrier *pulse_barrier)
       : host_context_(std::move(host_context)),
-        gpu_context_(
-            absl::make_unique<GpuContext<T>>(host_context_.get(), gpu_number)),
+        gpu_context_(absl::make_unique<gemm_test::GpuContext>(
+            host_context_.get(), gpu_number)),
         pulse_barrier_(pulse_barrier) {}
 
  protected:
@@ -255,7 +255,7 @@ class ComputeStream : public BaseComputeStream {
 
  private:
   std::shared_ptr<HostContext<T>> host_context_;
-  std::unique_ptr<GpuContext<T>> gpu_context_;
+  std::unique_ptr<gemm_test::GpuContext> gpu_context_;
   const PulseBarrier *pulse_barrier_;
 };
 

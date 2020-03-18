@@ -48,7 +48,7 @@ bool DistributionTests::TestStatistic(const std::vector<double>& samples,
   CHECK(result != nullptr);
 
   if (samples.empty()) {
-    VLOG(3) << "Distribution test failed: no samples.";
+    LOG(ERROR) << "Distribution test failed: no samples.";
     return false;
   }
 
@@ -57,7 +57,7 @@ bool DistributionTests::TestStatistic(const std::vector<double>& samples,
   const double sigma = StandardDeviation(samples);
 
   if (sigma == 0) {
-    VLOG(3) << "Distribution test failed: zero variance.";
+    LOG(ERROR) << "Distribution test failed: zero variance.";
     return false;
   }
 
@@ -80,7 +80,7 @@ bool DistributionTests::TestStatistic(const std::vector<double>& samples,
 
     long double term;
     switch (type) {
-      case ANDERSON_DARLING: {
+      case TestType::ANDERSON_DARLING: {
         long double psi = 0.5 * std::erfc(y);
         int a = 2 * i - 1;
         term = a * std::log(phi) + (2 * n - a) * std::log(psi);
@@ -90,13 +90,13 @@ bool DistributionTests::TestStatistic(const std::vector<double>& samples,
         // considerably less numerically stable.
         break;
       }
-      case CRAMER_VON_MISES: {
+      case TestType::CRAMER_VON_MISES: {
         long double a = (2 * i - 1) / static_cast<long double>(2 * n);
         term = (a - phi) * (a - phi);
         break;
       }
       default:
-        LOG(FATAL) << "Unknown test type " << type;
+        LOG(ERROR) << "Unknown test type enum" << static_cast<int>(type);
         return false;
     }
 
@@ -105,12 +105,12 @@ bool DistributionTests::TestStatistic(const std::vector<double>& samples,
 
   // Apply modifications.
   switch (type) {
-    case ANDERSON_DARLING: {
+    case TestType::ANDERSON_DARLING: {
       double a_sq = -n - sum / n;
       *result = a_sq * (1 + 0.75 / n + 2.25 / (n * n));
       break;
     }
-    case CRAMER_VON_MISES: {
+    case TestType::CRAMER_VON_MISES: {
       double w_sq = sum + 1.0 / (12 * n);
       *result = w_sq * (1 + 0.5 / n);
       break;

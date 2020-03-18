@@ -34,9 +34,11 @@ class HostContext;
 
 // Configuration options for Hostcontext object and GpuContext objects.
 struct ContextOption {
-  // Specify the input and output matrices data precision types, currently
-  // support "half", "single", and "double", which are 16-bit, 32-bit, and
-  // 64-bit floating point precision respectively.
+  // Specify the input and output matrices data precision types
+  // CUDA supports "half", "single", and "double", which are 16-bit,
+  // 32-bit, 64-bit floating point precision respectively. Limited support also
+  // exists for integer operations, with data_type_in = "int8" and data_type
+  // out = "int32" or float.
   std::string data_type_in;
   std::string data_type_out;
 
@@ -73,7 +75,6 @@ struct ContextOption {
   // "gemm_tensor_algo_default", "gemm_tensor_algo_0", "gemm_tensor_algo_1",
   // "gemm_tensor_algo_2", "gemm_tensor_algo_3", "gemm_tensor_algo_4".
   std::string algorithm = "gemm_algo_default";
-  std::string algorithm_tc;
 };
 
 // The base class for GpuContext objects. It Contains common functions and data
@@ -136,9 +137,6 @@ class HostContext {
   const bool GetTransb() { return options_.transb; }
   const std::string GetComputeType() { return options_.compute_type; }
   const std::string GetCublasAlgorithm() { return options_.algorithm; }
-  const std::string GetCublasAlgorithmTensorCore() {
-    return options_.algorithm_tc;
-  }
 
  protected:
   explicit HostContext(const ContextOption &options) : options_(options) {}

@@ -23,16 +23,9 @@ cc_library(
 )
 
 cc_library(
-    name = "cuda",
-    srcs = ["cuda/lib64/stubs/libcuda.so"],
-    linkopts = ["-ldl"],
-)
-
-cc_library(
     name = "cuda_runtime",
     srcs = ["cuda/lib64/libcudart_static.a"],
-    deps = [":cuda"],
-    linkopts = ["-lrt"],
+    linkopts = ["-ldl", "-lrt"],
 )
 
 cc_library(
@@ -43,7 +36,6 @@ cc_library(
         "cuda/lib64/libculibos.a",
     ],
     deps = [
-        ":cuda",
         ":cuda_headers"
     ],
 )

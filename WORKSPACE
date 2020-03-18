@@ -43,7 +43,6 @@ http_archive(
       "https://github.com/google/glog/archive/925858d9969d8ee22aabc3635af00a37891f4e25.zip", # 2019-11-20
     ],
     sha256 = "dbe787f2a7cf1146f748a191c99ae85d6b931dd3ebdcc76aa7ccae3699149c67",
-
 )
 
 http_archive(

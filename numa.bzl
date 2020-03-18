@@ -4,7 +4,7 @@ def build_numa_lib(repository_ctx):
     repository_ctx.download_and_extract(
         url = "https://github.com/numactl/numactl/archive/3648aa5bf6e29bf618195c615ff2ced4bb995327.zip",
         stripPrefix = "numactl-3648aa5bf6e29bf618195c615ff2ced4bb995327",
-	sha256 = "70b41bac88587ee980f266b3b2a9f32e9efef7c003a258eb50677cd8c66f358e",
+        sha256 = "70b41bac88587ee980f266b3b2a9f32e9efef7c003a258eb50677cd8c66f358e",
     )
     repository_ctx.execute(["./autogen.sh"])
     repository_ctx.execute(["./configure"])

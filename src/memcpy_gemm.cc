@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
@@ -37,6 +36,7 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/substitute.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "src/cuda_check.h"
@@ -45,7 +45,6 @@
 #include "src/multi_gemm_lib.h"
 #include "cuda/include/cuda_runtime.h"
 #include "re2/re2.h"
-
 
 ABSL_FLAG(
     std::string, flows, "2:c0-g0-a0 2:g0-c0-a1",
@@ -80,19 +79,24 @@ ABSL_FLAG(std::vector<std::string>, gpus, {"0"},
           "Comma-separated list of GPUs to execute on.");
 ABSL_FLAG(bool, gemm, false, "Perform GEMM operations.");
 
-ABSL_FLAG(std::string, fp_precision, "", "half, single, or double precision.");
-ABSL_FLAG(std::string, input_precision, "single",
-          "half, single, or double precision.");
+ABSL_FLAG(
+    std::string, fp_precision, "",
+    "Sets the input, output, and compute precision to the selected "
+    "value. Overrides the 'input_precision', 'output_precision', and "
+    "'compute_precision' fields. To used mixed precision, use specific "
+    "combinations of those flags instead of 'fp_precision'. "
+    "Accepted inputs for 'fp_precision' are 'half', 'single', and 'double'.");
+ABSL_FLAG(
+    std::string, input_precision, "single",
+    "int8, half, single, or double precision. Only a subset of combinations of "
+    "'input_precision', 'output_precision', and 'compute_precision' types are "
+    "allowed, dependent on the CUDA version and GPU architecture. See the "
+    "documentation for a full explanation of supported computation types.");
 ABSL_FLAG(std::string, output_precision, "single",
-          "half, single, or double precision.");
+          "int32, half, single, or double precision.");
 ABSL_FLAG(std::string, compute_precision, "single",
-          "half, single, or double precision.");
+          "int32, half, single, or double precision.");
 ABSL_FLAG(std::string, algorithm, "", "cublasGemmEx compute algorithm.");
-// This flag is only used when we want both cuda core and tensor core to work
-// at the same time. In this case, "algorithm" specifies the algorithm in cuda
-// core and "algorithm_tc" specify the algorithm in tensor core
-ABSL_FLAG(std::string, algorithm_tc, "",
-          "cublasGemmEx compute algorithm for tensor cores.");
 
 // The matrices for AxB=C have the following dimensions:
 // A is MxK, B is KxN, and C is MxN. The default value for N is 128.
@@ -298,14 +302,14 @@ int main(int argc, char **argv) {
       ctx_opt.data_type_out = absl::GetFlag(FLAGS_output_precision);
       ctx_opt.compute_type = absl::GetFlag(FLAGS_compute_precision);
     }
+    LOG(INFO) << absl::Substitute(
+        "Executing GEMM with input precision=$0, output precision=$1, compute "
+        "precision=$2",
+        ctx_opt.data_type_in, ctx_opt.data_type_out, ctx_opt.compute_type);
     ctx_opt.gaussian = absl::GetFlag(FLAGS_nv_gaussian);
     std::string algorithm = absl::GetFlag(FLAGS_algorithm);
-    std::string algorithm_tc = absl::GetFlag(FLAGS_algorithm_tc);
     if (!algorithm.empty()) {
       ctx_opt.algorithm = algorithm;
-    }
-    if (!algorithm_tc.empty()) {
-      ctx_opt.algorithm_tc = algorithm_tc;
     }
 
     size_t m = absl::GetFlag(FLAGS_M);
@@ -314,8 +318,8 @@ int main(int argc, char **argv) {
     ctx_opt.dim_size_n = n;
     ctx_opt.dim_size_m = m != 0 ? m : n;  // default to N
     ctx_opt.dim_size_k = k != 0 ? k : n;  // default to NN
-    VLOG(3) << "(M,N,K) = (" << ctx_opt.dim_size_m << "," << ctx_opt.dim_size_n
-            << "," << ctx_opt.dim_size_k << ")";
+    LOG(INFO) << absl::Substitute("(M,N,K) = ($0,$1,$2)", ctx_opt.dim_size_m,
+                                  ctx_opt.dim_size_n, ctx_opt.dim_size_k);
     host_ctx = pggt::HostContext::Create(&ctx_opt);
     if (host_ctx == nullptr) {
       LOG(ERROR) << "GEMM Internal Error: Failed to create a host context.";
@@ -407,10 +411,7 @@ int main(int argc, char **argv) {
     size_t dim_n = ctx_opt.dim_size_n;
     size_t dim_k = ctx_opt.dim_size_k;
     double ops_per_loop = 2.0 * dim_m * dim_n * dim_k;
-    // If we are running both cuda core and tensor core at the same time
-    if (!absl::GetFlag(FLAGS_algorithm_tc).empty()) {
-      ops_per_loop *= 2.0;
-    }
+
     double total_ops = loops * ops_per_loop;
     double ops_per_gpu = total_ops / gpu_list.size();
     double total_time = absl::ToDoubleSeconds(end_time - start_time);

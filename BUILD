@@ -12,8 +12,8 @@ cc_library(
     ],
     deps = [
         "@absl//absl/base",
-        "@absl//absl/flags:flag",
         "@absl//absl/random",
+        "@absl//absl/random:distributions",
         "@glog",
         "@half//:includes",
     ],
@@ -80,6 +80,7 @@ cc_binary(
 
 py_test(
     name = "memcpy_gemm_test",
+    size = "medium",
     srcs = ["src/memcpy_gemm_test.py"],
     data = [
         ":memcpy_gemm",
@@ -87,7 +88,7 @@ py_test(
     python_version = "PY3",
     tags = [
         "nomsan",
-        "requires-gpu-sm35",
+        "requires-gpu-sm70-only",
     ],
 )
 
@@ -104,6 +105,7 @@ cc_library(
         ":matrix_lib",
         "@absl//absl/memory",
         "@absl//absl/random",
+        "@absl//absl/strings",
         "@cuda//:cuda_headers",
         "@half//:includes",
     ],
@@ -121,8 +123,10 @@ cc_library(
     deps = [
         ":matrix_lib",
         ":multi_gemm_lib",
+        "@absl//absl/container:flat_hash_map",
         "@absl//absl/memory",
         "@absl//absl/random",
+        "@absl//absl/strings",
         "@absl//absl/strings:str_format",
         "@cuda//:cublas_static",
         "@cuda//:cuda_headers",
@@ -169,5 +173,22 @@ cc_test(
         "@absl//absl/random",
         "@gtest//:gtest_main",
         "@half//:includes",
+    ],
+)
+
+cc_test(
+    name = "gemm_test_lib_internal_test",
+    srcs = [
+        "src/gemm_test_lib_internal_test.cc",
+    ],
+    tags = [
+        "nomsan",
+        "requires-gpu-sm70-only",
+    ],
+    deps = [
+        ":gemm_test_lib",
+        ":gemm_test_lib_internal",
+        ":multi_gemm_lib",
+        "@gtest//:gtest_main",
     ],
 )

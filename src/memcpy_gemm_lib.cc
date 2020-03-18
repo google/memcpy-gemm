@@ -42,7 +42,7 @@ std::string DeviceSpecToString(DeviceSpec dev) {
 }
 
 char *BufferPool::GetBuffer(DeviceSpec dev, int buffer_index) {
-  ;
+  //numa_init();
   // Get readout from libnuma here, but do not fail unless the CPU path is used.
   const int numa_works = numa_available();
   CHECK_GE(buffer_index, -1);
