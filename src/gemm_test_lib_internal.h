@@ -40,24 +40,32 @@ class GpuComputationInterface {
   // Executes a computation cycle. The backend cuBLAS function call depends on
   // the GPU architecture and potentially the CUDA version.
   virtual cublasStatus_t MatrixMultiComputation(
-      const ContextOption &context_options, cublasHandle_t handle,
+      const ContextOption &context_options,
       const void *alpha, const void *A, const void *B, const void *beta,
       void *C) = 0;
+
+  // Sets the stream to use for any cuBLAS library calls.
+  virtual cublasStatus_t SetStream(cudaStream_t stream_id) = 0;
 };
 
 // Modern interface for compute capability >= 5.0. Allows half and mixed
 // precision computation, and limited integer based math.
 class CudaCublasInterface final : public GpuComputationInterface {
  public:
-  CudaCublasInterface() {}
+  CudaCublasInterface();
 
-  ~CudaCublasInterface() override {}
+  ~CudaCublasInterface() override;
 
   cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
-                                        cublasHandle_t handle,
                                         const void *alpha, const void *A,
                                         const void *B, const void *beta,
                                         void *C) override;
+
+  cublasStatus_t SetStream(const cudaStream_t stream_id) override;
+
+ private:
+  cublasHandle_t cublas_handle_;
+
 };
 
 // Legacy interface for compute capability <= 5 (k80 and earlier). Supports
@@ -65,14 +73,18 @@ class CudaCublasInterface final : public GpuComputationInterface {
 template <typename T>
 class LegacyCudaCublasInterface final : public GpuComputationInterface {
  public:
-  LegacyCudaCublasInterface() {}
+    LegacyCudaCublasInterface();
 
-  ~LegacyCudaCublasInterface() override {}
+    ~LegacyCudaCublasInterface() override;
+
   cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
-                                        cublasHandle_t handle,
                                         const void *alpha, const void *A,
                                         const void *B, const void *beta,
                                         void *C) override;
+
+   cublasStatus_t SetStream(const cudaStream_t stream_id) override;
+    private:
+        cublasHandle_t cublas_handle_;
 };
 
 // Selects and creates a GEMM interface based on the precision of computation to
@@ -144,15 +156,13 @@ class MixedPrecisionHostContext : public HostContext {
 
   MixedPrecisionHostContext(
       const ContextOption &options,
-      std::unique_ptr<MemoryAllocatorInterface> memory_allocator,
-      std::unique_ptr<GpuComputationInterface> computation_interface);
+      std::unique_ptr<MemoryAllocatorInterface> memory_allocator);
 
   ~MixedPrecisionHostContext() override {}
 
  protected:
   std::unique_ptr<GpuContext> CreateGpuContext(int gpu_num) override;
   std::unique_ptr<MemoryAllocatorInterface> memory_allocator_;
-  std::unique_ptr<GpuComputationInterface> computation_interface_;
   CudaRandomMatrix<P_in> a_;
   CudaRandomMatrix<P_in> b_;
 };
@@ -166,7 +176,7 @@ class MixedPrecisionGpuContext : public GpuContext {
                            RandomMatrix<P_in> const *const matrix_a_p,
                            RandomMatrix<P_in> const *const matrix_b_p,
                            int gpu_num,
-                           GpuComputationInterface *compute_interface);
+                           std::unique_ptr<GpuComputationInterface> compute_interface);
 
   ~MixedPrecisionGpuContext() override;
 
@@ -179,8 +189,7 @@ class MixedPrecisionGpuContext : public GpuContext {
  protected:
   GpuDataHandler<P_in, P_out> data_handler_;
   cudaStream_t stream_;
-  cublasHandle_t cublas_handle_;
-  GpuComputationInterface *compute_interface_;
+  std::unique_ptr<GpuComputationInterface> compute_interface_;
 };
 
 extern template class GpuDataHandler<half_float::half, half_float::half>;

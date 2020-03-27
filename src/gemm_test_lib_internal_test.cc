@@ -163,10 +163,6 @@ class LegacyCublasTest : public ::testing::Test {
  public:
   LegacyCublasTest() {
     CUDA_CHECK(cudaStreamCreate(&stream_));
-    CUBLAS_CHECK(cublasCreate(&cublas_handle_));
-    CUBLAS_CHECK(cublasSetStream(cublas_handle_, stream_));
-    CUBLAS_CHECK(
-        cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
     options_.dim_size_m = 2048;
     options_.dim_size_n = 2048;
     options_.dim_size_k = 2048;
@@ -177,13 +173,11 @@ class LegacyCublasTest : public ::testing::Test {
 
   ~LegacyCublasTest() override {
     CUDA_CHECK(cudaStreamDestroy(stream_));
-    CUBLAS_CHECK(cublasDestroy(cublas_handle_));
   };
 
  protected:
   ContextOption options_;
   cudaStream_t stream_;
-  cublasHandle_t cublas_handle_;
 };
 
 TYPED_TEST_SUITE_P(LegacyCublasTest);
@@ -203,8 +197,9 @@ TYPED_TEST_P(LegacyCublasTest, LegacyCublas) {
       this->options_, this->stream_, &data_handler);
 
   LegacyCudaCublasInterface<InputPrecision> cublas;
+  cublas.SetStream(this->stream_);
   CUBLAS_CHECK(cublas.MatrixMultiComputation(
-      this->options_, this->cublas_handle_, data_handler.Alpha(),
+      this->options_, data_handler.Alpha(),
       data_handler.InputA(), data_handler.InputB(), data_handler.Beta(),
       data_handler.Output()));
   CUDA_CHECK(cudaStreamSynchronize(this->stream_));
@@ -223,10 +218,6 @@ class ModernCublasTest : public ::testing::Test {
  public:
   ModernCublasTest() {
     CUDA_CHECK(cudaStreamCreate(&stream_));
-    CUBLAS_CHECK(cublasCreate(&cublas_handle_));
-    CUBLAS_CHECK(cublasSetStream(cublas_handle_, stream_));
-    CUBLAS_CHECK(
-        cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
     options_.dim_size_m = 2048;
     options_.dim_size_n = 2048;
     options_.dim_size_k = 2048;
@@ -237,13 +228,11 @@ class ModernCublasTest : public ::testing::Test {
 
   ~ModernCublasTest() override {
     CUDA_CHECK(cudaStreamDestroy(stream_));
-    CUBLAS_CHECK(cublasDestroy(cublas_handle_));
   };
 
  protected:
   ContextOption options_;
   cudaStream_t stream_;
-  cublasHandle_t cublas_handle_;
 };
 
 TYPED_TEST_SUITE_P(ModernCublasTest);
@@ -263,8 +252,9 @@ TYPED_TEST_P(ModernCublasTest, ModernCublas) {
       this->options_, this->stream_, &data_handler);
 
   CudaCublasInterface cublas;
+  cublas.SetStream(this->stream_);
   CUBLAS_CHECK(cublas.MatrixMultiComputation(
-      this->options_, this->cublas_handle_, data_handler.Alpha(),
+      this->options_, data_handler.Alpha(),
       data_handler.InputA(), data_handler.InputB(), data_handler.Beta(),
       data_handler.Output()));
   CUDA_CHECK(cudaStreamSynchronize(this->stream_));
