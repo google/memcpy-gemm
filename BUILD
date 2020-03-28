@@ -189,6 +189,7 @@ cc_test(
         ":gemm_test_lib",
         ":gemm_test_lib_internal",
         ":multi_gemm_lib",
+        "@cuda//:cuda_runtime",
         "@gtest//:gtest_main",
     ],
 )

@@ -25,6 +25,7 @@
 #include "src/matrix_lib.h"
 #include "src/memory_allocator_interface.h"
 #include "src/multi_gemm_lib.h"
+#include "cuda/include/cublasLt.h"
 #include "cuda/include/driver_types.h"
 
 namespace platforms_gpus {
@@ -46,6 +47,11 @@ class GpuComputationInterface {
 
   // Sets the stream to use for any cuBLAS library calls.
   virtual cublasStatus_t SetStream(cudaStream_t stream_id) = 0;
+
+  // Account for any context-specific initialization. Most backends do not need any setup, but
+  // the cublasLT API requires some parameter settings that are dependent on matrix options, which
+  // we don't want to put in the critical path.
+  virtual cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) {return CUBLAS_STATUS_SUCCESS;}
 };
 
 // Modern interface for compute capability >= 5.0. Allows half and mixed
@@ -77,14 +83,41 @@ class LegacyCudaCublasInterface final : public GpuComputationInterface {
 
     ~LegacyCudaCublasInterface() override;
 
-  cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
-                                        const void *alpha, const void *A,
-                                        const void *B, const void *beta,
-                                        void *C) override;
+      cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
+                                            const void *alpha, const void *A,
+                                            const void *B, const void *beta,
+                                            void *C) override;
 
    cublasStatus_t SetStream(const cudaStream_t stream_id) override;
     private:
         cublasHandle_t cublas_handle_;
+};
+
+class CudaInt8TensorInterface final: public GpuComputationInterface {
+  public:
+
+    CudaInt8TensorInterface();
+
+    ~CudaInt8TensorInterface() override;
+
+    cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
+                                          const void *alpha, const void *A,
+                                          const void *B, const void *beta,
+                                          void *C) override;
+
+    cublasStatus_t SetStream(const cudaStream_t stream_id) override;
+    InitializeCublasSettings(const ContextOption & options) override;
+
+  private:
+    cublasLtHandle_t cublas_handle_;
+    cudaStream_t stream_;
+    // CUDA math operation descriptor.
+    cublasLtMatmulDesc_t matmul_desc_;
+    // CUDA matrix descriptors.
+    cublasLtMatrixLayout_t layout_a_;
+    cublasLtMatrixLayout_t layout_b_;
+    cublasLtMatrixLayout_t layout_c_;
+
 };
 
 // Selects and creates a GEMM interface based on the precision of computation to

@@ -21,6 +21,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
+#include "cuda/include/cublasLt.h"
 #include "src/matrix_lib.h"
 
 namespace {
@@ -130,6 +131,7 @@ CudaCublasInterface::CudaCublasInterface() {
     CUBLAS_CHECK(cublasCreate(&cublas_handle_));
     CUBLAS_CHECK(
     cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
+    cublasSetMathMode(cublas_handle_, CUBLAS_TENSOR_OP_MATH);
 }
 
 CudaCublasInterface::~CudaCublasInterface() {
@@ -156,6 +158,44 @@ template<typename T>
 cublasStatus_t LegacyCudaCublasInterface<T>::SetStream(const cudaStream_t stream_id) {
     return cublasSetStream(cublas_handle_, stream_id);
 }
+
+CudaInt8TensorInterface::CudaInt8TensorInterface() {
+    CUBLAS_CHECK(cublasLtCreate(&cublas_handle_));
+    CUBLAS_CHECK(cublasMatmulDescCreate(&matmul_desc_));
+}
+
+CudaInt8TensorInterface::~CudaInt8TensorInterface() {
+    cublasLtDestroy(cublas_handle_);
+    cublasLtMatrixLayoutDestroy(layout_a);
+    cublasLtMatrixLayoutDestroy(layout_b);
+    cublasLtMatrixLayoutDestroy(layout_c);
+
+}
+
+cublasStatus_t CudaInt8TensorInterface::SetStream(const cudaStream_t stream_id) {
+    stream_ = stream_id;
+    return CUBLAS_STATUS_SUCCESS;
+}
+
+cublasStatus_t CudaInt8TensorInterface::InitializeCublasSettings(
+        const ContextOption &options) {
+    if (auto status = cublasLtMatrixLayoutCreate(
+                &layout_a_, GetCudaComputeType(options.data_type_in), dim_size_m,
+                options.dim_size_k, options.dim_size_m);
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (auto status = cublasLtMatrixLayoutCreate(
+                &layout_b_, GetCudaComputeType(options.data_type_in), dim_size_k,
+                options.dim_size_n, options.dim_size_k);
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    return cublasLtMatrixLayoutCreate(
+            &layout_c_, GetCudaComputeType(options.data_type_out), dim_size_m,
+            options.dim_size_n, options.dim_size_m);
+}
+
 
 std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
     absl::string_view compute_type, const float compute_capability) {
@@ -233,6 +273,32 @@ cublasStatus_t LegacyCudaCublasInterface<double>::MatrixMultiComputation(
       reinterpret_cast<const double *>(B), context_options.dim_size_k,
       reinterpret_cast<const double *>(beta), reinterpret_cast<double *>(C),
       context_options.dim_size_m);
+}
+
+cublasStatus_t CudaInt8TensorInterface::MatrixMultiComputation(
+        const ContextOption &context_options, const void *alpha,
+        const void *A, const void *B, const void *beta,
+        void *C) {
+    return cublasLtMatmuul(
+                cublas_handle_,
+                matmul_desc,
+                // input types and scaling factors
+                alpha,
+                A,
+                adesc, // TODO fill in
+                B,
+                bDesc, // TODO fill in
+                // output type and scaling factors
+                beta,
+                C,
+                Cdesc, // fill
+                C,
+                Cdesc, // fill
+                nullptr,
+                nullptr,
+                0,
+                stream_
+            );
 }
 
 template <typename P_in, typename P_out>
@@ -361,7 +427,7 @@ MixedPrecisionGpuContext<P_in, P_out>::MixedPrecisionGpuContext(
                                dev_prop.name);
   CUDA_CHECK(cudaStreamCreate(&stream_));
   CUBLAS_CHECK(compute_interface_->SetStream(stream_));
-
+  CUDA_CHECK(compute_interface->InitializeCublasSettings(options_));
   data_handler_.SetComputeType(options_.compute_type);
   data_handler_.SetGpuId(gpu_num_);
   data_handler_.Initialize(matrix_a_p, matrix_b_p, stream_);
