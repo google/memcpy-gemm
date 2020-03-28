@@ -21,13 +21,14 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
+#include "cuda/include/cublasLt.h"
 #include "src/matrix_lib.h"
 
 namespace {
 
-// This class is instantialized when registering a device to be used for GPU
+// This class is instantiated when registering a device to be used for GPU
 // executions. Before register current gpu_num, it will store previous one.
-// And restore previous gpu_num on deconstuction of the instance.
+// And restore previous gpu_num on deconstruction of the instance.
 class WithCUDADevice {
  public:
   explicit WithCUDADevice(int gpu_num) {
@@ -126,8 +127,115 @@ namespace platforms_gpus {
 namespace gemm_test {
 namespace internal {
 
+CudaCublasInterface::CudaCublasInterface() {
+    CUBLAS_CHECK(cublasCreate(&cublas_handle_));
+    CUBLAS_CHECK(cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
+    CUBLAS_CHECK(cublasSetMathMode(cublas_handle_, CUBLAS_TENSOR_OP_MATH));
+}
+
+CudaCublasInterface::~CudaCublasInterface() {
+    cublasDestroy(cublas_handle_);
+}
+
+cublasStatus_t CudaCublasInterface::SetStream(const cudaStream_t stream_id) {
+    return cublasSetStream(cublas_handle_, stream_id);
+}
+
+template<typename T>
+LegacyCudaCublasInterface<T>::LegacyCudaCublasInterface() {
+    CUBLAS_CHECK(cublasCreate(&cublas_handle_));
+    CUBLAS_CHECK(
+            cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
+}
+
+template<typename T>
+LegacyCudaCublasInterface<T>::~LegacyCudaCublasInterface() {
+    cublasDestroy(cublas_handle_);
+}
+
+template<typename T>
+cublasStatus_t LegacyCudaCublasInterface<T>::SetStream(const cudaStream_t stream_id) {
+    return cublasSetStream(cublas_handle_, stream_id);
+}
+
+CudaInt8TensorInterface::CudaInt8TensorInterface() {
+    CUBLAS_CHECK(cublasLtCreate(&cublas_handle_));
+    CUBLAS_CHECK(cublasLtMatmulDescCreate(&matmul_desc_, CUDA_R_32F));
+    CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(matmul_desc_, CUBLASLT_MATMUL_DESC_TRANSA, &kTransOpA, sizeof(kTransOpA)));
+    CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(matmul_desc_, CUBLASLT_MATMUL_DESC_TRANSB, &kTransOpB, sizeof(kTransOpB)));
+    CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(matmul_desc_, CUBLASLT_MATMUL_DESC_POINTER_MODE, &kPointerMode, sizeof(kPointerMode)));
+}
+
+CudaInt8TensorInterface::~CudaInt8TensorInterface() {
+    cublasLtDestroy(cublas_handle_);
+    cublasLtMatrixLayoutDestroy(layout_a_);
+    cublasLtMatrixLayoutDestroy(layout_b_);
+    cublasLtMatrixLayoutDestroy(layout_c_);
+
+}
+
+cublasStatus_t CudaInt8TensorInterface::SetStream(const cudaStream_t stream_id) {
+    stream_ = stream_id;
+    return CUBLAS_STATUS_SUCCESS;
+}
+
+cublasStatus_t CudaInt8TensorInterface::InitializeCublasSettings(
+        const ContextOption &options) {
+    const cudaDataType_t input_type = GetCudaComputeType(options.data_type_in);
+    const cudaDataType_t output_type = GetCudaComputeType(options.data_type_out);
+    const cudaDataType_t compute_type = GetCudaComputeType(options.compute_type);
+
+    // Computation descriptors.
+    if (auto status = cublasLtMatmulDescSetAttribute(matmul_desc_, CUBLASLT_MATMUL_DESC_COMPUTE_TYPE, &compute_type, sizeof(compute_type));
+        status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (auto status = cublasLtMatmulDescSetAttribute(matmul_desc_, CUBLASLT_MATMUL_DESC_SCALE_TYPE, &compute_type, sizeof(compute_type));
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    // Matrix descriptors
+    if (auto status = cublasLtMatrixLayoutCreate(
+                &layout_a_, input_type, options.dim_size_m,
+                options.dim_size_k, options.dim_size_m);
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (auto status = cublasLtMatrixLayoutSetAttribute(
+                layout_a_, CUBLASLT_MATRIX_LAYOUT_ORDER, &kMatrixACLayout, sizeof(kMatrixACLayout));
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (auto status = cublasLtMatrixLayoutCreate(
+                &layout_b_, input_type, options.dim_size_k,
+                options.dim_size_n, options.dim_size_k);
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (auto status = cublasLtMatrixLayoutSetAttribute(
+                layout_b_, CUBLASLT_MATRIX_LAYOUT_ORDER, &kMatrixBLayout, sizeof(kMatrixBLayout));
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    if (auto status = cublasLtMatrixLayoutCreate(
+                &layout_c_, output_type, options.dim_size_m,
+                options.dim_size_n, options.dim_size_m);
+            status != CUBLAS_STATUS_SUCCESS) {
+        return status;
+    }
+    return cublasLtMatrixLayoutSetAttribute(
+            layout_c_, CUBLASLT_MATRIX_LAYOUT_ORDER,  &kMatrixACLayout, sizeof(kMatrixACLayout));
+}
+
+
 std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
-    absl::string_view compute_type, const float compute_capability) {
+    absl::string_view compute_type, absl::string_view input_type, const float compute_capability) {
+    LOG(INFO) << "compute " << compute_type << " input " << input_type << " capability " << compute_capability;
+  // Turing and later architectures support tensor int8 operations.
+  if (compute_type == "int32" && input_type == "int8" && compute_capability >= 7) {
+      LOG(INFO) << "Using cublasLT IMMA for GEMM computation";
+      return absl::make_unique<CudaInt8TensorInterface>();
+  }
   // If on a capable machine, use the modern cublasGemmEx() wrapper which can
   // handle any combination of data types.
   if (compute_capability >= 5.0) {
@@ -150,10 +258,9 @@ std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
 }
 
 cublasStatus_t CudaCublasInterface::MatrixMultiComputation(
-    const ContextOption &context_options, cublasHandle_t handle,
-    const void *alpha, const void *A, const void *B, const void *beta,
-    void *C) {
-  return cublasGemmEx(handle,
+    const ContextOption &context_options, const void *alpha,
+    const void *A, const void *B, const void *beta, void *C) {
+  return cublasGemmEx(cublas_handle_,
                       // Transpose before multiplication.
                       context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
                       context_options.transb ? CUBLAS_OP_T : CUBLAS_OP_N,
@@ -176,11 +283,10 @@ cublasStatus_t CudaCublasInterface::MatrixMultiComputation(
 
 template <>
 cublasStatus_t LegacyCudaCublasInterface<float>::MatrixMultiComputation(
-    const ContextOption &context_options, cublasHandle_t handle,
-    const void *alpha, const void *A, const void *B, const void *beta,
-    void *C) {
+    const ContextOption &context_options, const void *alpha,
+    const void *A, const void *B, const void *beta, void *C) {
   return cublasSgemm(
-      handle, context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
+      cublas_handle_, context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
       context_options.transb ? CUBLAS_OP_T : CUBLAS_OP_N,
       context_options.dim_size_m, context_options.dim_size_n,
       context_options.dim_size_k, reinterpret_cast<const float *>(alpha),
@@ -192,11 +298,11 @@ cublasStatus_t LegacyCudaCublasInterface<float>::MatrixMultiComputation(
 
 template <>
 cublasStatus_t LegacyCudaCublasInterface<double>::MatrixMultiComputation(
-    const ContextOption &context_options, cublasHandle_t handle,
-    const void *alpha, const void *A, const void *B, const void *beta,
+    const ContextOption &context_options, const void *alpha,
+    const void *A, const void *B, const void *beta,
     void *C) {
   return cublasDgemm(
-      handle, context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
+      cublas_handle_, context_options.transa ? CUBLAS_OP_T : CUBLAS_OP_N,
       context_options.transb ? CUBLAS_OP_T : CUBLAS_OP_N,
       context_options.dim_size_m, context_options.dim_size_n,
       context_options.dim_size_k, reinterpret_cast<const double *>(alpha),
@@ -206,21 +312,44 @@ cublasStatus_t LegacyCudaCublasInterface<double>::MatrixMultiComputation(
       context_options.dim_size_m);
 }
 
+cublasStatus_t CudaInt8TensorInterface::MatrixMultiComputation(
+        const ContextOption &context_options, const void *alpha,
+        const void *A, const void *B, const void *beta,
+        void *C) {
+    return cublasLtMatmul(
+                cublas_handle_,
+                matmul_desc_,
+                // input types and scaling factors
+                alpha,
+                A,
+                layout_a_,
+                B,
+                layout_b_,
+                // output type and scaling factors
+                beta,
+                C,
+                layout_c_,
+                C,
+                layout_c_,
+                nullptr,
+                nullptr,
+                0,
+                stream_
+            );
+}
+
 template <typename P_in, typename P_out>
 MixedPrecisionHostContext<P_in, P_out>::MixedPrecisionHostContext(
     const ContextOption &options)
     : MixedPrecisionHostContext<P_in, P_out>(
-          options, absl::make_unique<CudaMemoryAllocator>(),
-          SelectGemmInterface(options.compute_type, GetComputeCapability())) {}
+          options, absl::make_unique<CudaMemoryAllocator>()) {}
 
 template <typename P_in, typename P_out>
 MixedPrecisionHostContext<P_in, P_out>::MixedPrecisionHostContext(
     const ContextOption &options,
-    std::unique_ptr<MemoryAllocatorInterface> memory_allocator,
-    std::unique_ptr<GpuComputationInterface> computation_interface)
+    std::unique_ptr<MemoryAllocatorInterface> memory_allocator)
     : HostContext(options),
       memory_allocator_(std::move(memory_allocator)),
-      computation_interface_(std::move(computation_interface)),
       a_(options.dim_size_m, options.dim_size_k, memory_allocator_.get()),
       b_(options.dim_size_k, options.dim_size_n, memory_allocator_.get()) {
   a_.Initialize(options.rng, /*scale=*/1e30, options.gaussian);
@@ -231,7 +360,8 @@ template <typename P_in, typename P_out>
 std::unique_ptr<GpuContext>
 MixedPrecisionHostContext<P_in, P_out>::CreateGpuContext(int gpu_num) {
   return absl::make_unique<MixedPrecisionGpuContext<P_in, P_out>>(
-      this, &a_, &b_, gpu_num, computation_interface_.get());
+      this, &a_, &b_, gpu_num,
+      SelectGemmInterface(options_.compute_type, options_.data_type_in, GetComputeCapability()));
 }
 
 template <typename Compute_Type>
@@ -322,9 +452,9 @@ template <typename P_in, typename P_out>
 MixedPrecisionGpuContext<P_in, P_out>::MixedPrecisionGpuContext(
     HostContext *h, RandomMatrix<P_in> const *const matrix_a_p,
     RandomMatrix<P_in> const *const matrix_b_p, int gpu_num,
-    GpuComputationInterface *compute_interface)
+    std::unique_ptr<GpuComputationInterface> compute_interface)
     : GpuContext(h->GetOption(), gpu_num),
-      compute_interface_(compute_interface) {
+      compute_interface_(std::move(compute_interface)) {
   WithCUDADevice device(gpu_num_);
   cudaDeviceProp dev_prop;
   CUDA_CHECK(cudaGetDeviceProperties(&dev_prop, gpu_num_));
@@ -333,11 +463,10 @@ MixedPrecisionGpuContext<P_in, P_out>::MixedPrecisionGpuContext(
                                dev_prop.pciBusID, dev_prop.pciDeviceID,
                                dev_prop.name);
   CUDA_CHECK(cudaStreamCreate(&stream_));
-  CUBLAS_CHECK(cublasCreate(&cublas_handle_));
-  CUBLAS_CHECK(cublasSetStream(cublas_handle_, stream_));
-  CUBLAS_CHECK(
-      cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
-
+  CUBLAS_CHECK(compute_interface_->SetStream(stream_));
+  LOG(INFO) << "calling initialize";
+  LOG(INFO) << "options" << options_.compute_type;
+  CUBLAS_CHECK(compute_interface_->InitializeCublasSettings(options_));
   data_handler_.SetComputeType(options_.compute_type);
   data_handler_.SetGpuId(gpu_num_);
   data_handler_.Initialize(matrix_a_p, matrix_b_p, stream_);
@@ -365,7 +494,7 @@ void MixedPrecisionGpuContext<P_in, P_out>::LaunchKernel() {
   WithCUDADevice device(gpu_num_);
 
   CUBLAS_CHECK(compute_interface_->MatrixMultiComputation(
-      options_, cublas_handle_, data_handler_.Alpha(), data_handler_.InputA(),
+      options_, data_handler_.Alpha(), data_handler_.InputA(),
       data_handler_.InputB(), data_handler_.Beta(), data_handler_.Output()));
 }
 
@@ -376,6 +505,7 @@ template class GpuDataHandler<half_float::half, half_float::half>;
 template class GpuDataHandler<half_float::half, float>;
 template class GpuDataHandler<float, float>;
 template class GpuDataHandler<double, double>;
+template class GpuDataHandler<int8_t, int8_t>;
 template class GpuDataHandler<int8_t, int32_t>;
 template class GpuDataHandler<int8_t, float>;
 
@@ -383,6 +513,7 @@ template class MixedPrecisionHostContext<half_float::half, half_float::half>;
 template class MixedPrecisionHostContext<half_float::half, float>;
 template class MixedPrecisionHostContext<float, float>;
 template class MixedPrecisionHostContext<double, double>;
+template class MixedPrecisionHostContext<int8_t, int8_t>;
 template class MixedPrecisionHostContext<int8_t, int32_t>;
 template class MixedPrecisionHostContext<int8_t, float>;
 

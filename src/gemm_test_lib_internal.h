@@ -25,6 +25,7 @@
 #include "src/matrix_lib.h"
 #include "src/memory_allocator_interface.h"
 #include "src/multi_gemm_lib.h"
+#include "cuda/include/cublasLt.h"
 #include "cuda/include/driver_types.h"
 
 namespace platforms_gpus {
@@ -40,24 +41,43 @@ class GpuComputationInterface {
   // Executes a computation cycle. The backend cuBLAS function call depends on
   // the GPU architecture and potentially the CUDA version.
   virtual cublasStatus_t MatrixMultiComputation(
-      const ContextOption &context_options, cublasHandle_t handle,
+      const ContextOption &context_options,
       const void *alpha, const void *A, const void *B, const void *beta,
       void *C) = 0;
+
+  // Sets the stream to use for any cuBLAS library calls.
+  virtual cublasStatus_t SetStream(cudaStream_t stream_id) = 0;
+
+  // Account for any context-specific initialization. Most backends do not need any setup, but
+  // the cublasLT API requires some parameter settings that are dependent on matrix options, which
+  // we don't want to put in the critical path.
+  virtual cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) = 0;
 };
 
 // Modern interface for compute capability >= 5.0. Allows half and mixed
 // precision computation, and limited integer based math.
 class CudaCublasInterface final : public GpuComputationInterface {
  public:
-  CudaCublasInterface() {}
+  CudaCublasInterface();
 
-  ~CudaCublasInterface() override {}
+  ~CudaCublasInterface() override;
 
   cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
-                                        cublasHandle_t handle,
                                         const void *alpha, const void *A,
                                         const void *B, const void *beta,
                                         void *C) override;
+
+  cublasStatus_t SetStream(const cudaStream_t stream_id) override;
+
+   cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) override {
+
+       LOG(INFO) <<"Called";
+       return CUBLAS_STATUS_SUCCESS;
+   }
+
+private:
+  cublasHandle_t cublas_handle_;
+
 };
 
 // Legacy interface for compute capability <= 5 (k80 and earlier). Supports
@@ -65,14 +85,58 @@ class CudaCublasInterface final : public GpuComputationInterface {
 template <typename T>
 class LegacyCudaCublasInterface final : public GpuComputationInterface {
  public:
-  LegacyCudaCublasInterface() {}
+    LegacyCudaCublasInterface();
 
-  ~LegacyCudaCublasInterface() override {}
-  cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
-                                        cublasHandle_t handle,
-                                        const void *alpha, const void *A,
-                                        const void *B, const void *beta,
-                                        void *C) override;
+    ~LegacyCudaCublasInterface() override;
+
+      cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
+                                            const void *alpha, const void *A,
+                                            const void *B, const void *beta,
+                                            void *C) override;
+
+   cublasStatus_t SetStream(const cudaStream_t stream_id) override;
+    cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) override {
+        LOG(INFO) <<"Called";
+        return CUBLAS_STATUS_SUCCESS;
+    }
+        private:
+        cublasHandle_t cublas_handle_;
+};
+
+class CudaInt8TensorInterface final: public GpuComputationInterface {
+  public:
+
+    CudaInt8TensorInterface();
+
+    ~CudaInt8TensorInterface() override;
+
+    cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
+                                          const void *alpha, const void *A,
+                                          const void *B, const void *beta,
+                                          void *C) override;
+
+    cublasStatus_t SetStream(const cudaStream_t stream_id) override;
+    cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) override;
+
+  private:
+    // Layout description constants.
+    static constexpr cublasLtOrder_t kMatrixACLayout = CUBLASLT_ORDER_COL32;
+    static constexpr cublasLtOrder_t kMatrixBLayout = CUBLASLT_ORDER_COL4_4R2_8C;
+    // Transpose operation constants.
+    static constexpr cublasOperation_t kTransOpA = CUBLAS_OP_N;
+    static constexpr cublasOperation_t kTransOpB = CUBLAS_OP_T;
+    // Pointer mode constant.
+    static constexpr  cublasPointerMode_t kPointerMode = CUBLAS_POINTER_MODE_DEVICE;
+
+    cublasLtHandle_t cublas_handle_;
+    cudaStream_t stream_;
+    // CUDA math operation descriptor.
+    cublasLtMatmulDesc_t matmul_desc_;
+    // CUDA matrix descriptors.
+    cublasLtMatrixLayout_t layout_a_;
+    cublasLtMatrixLayout_t layout_b_;
+    cublasLtMatrixLayout_t layout_c_;
+
 };
 
 // Selects and creates a GEMM interface based on the precision of computation to
@@ -144,15 +208,13 @@ class MixedPrecisionHostContext : public HostContext {
 
   MixedPrecisionHostContext(
       const ContextOption &options,
-      std::unique_ptr<MemoryAllocatorInterface> memory_allocator,
-      std::unique_ptr<GpuComputationInterface> computation_interface);
+      std::unique_ptr<MemoryAllocatorInterface> memory_allocator);
 
   ~MixedPrecisionHostContext() override {}
 
  protected:
   std::unique_ptr<GpuContext> CreateGpuContext(int gpu_num) override;
   std::unique_ptr<MemoryAllocatorInterface> memory_allocator_;
-  std::unique_ptr<GpuComputationInterface> computation_interface_;
   CudaRandomMatrix<P_in> a_;
   CudaRandomMatrix<P_in> b_;
 };
@@ -166,7 +228,7 @@ class MixedPrecisionGpuContext : public GpuContext {
                            RandomMatrix<P_in> const *const matrix_a_p,
                            RandomMatrix<P_in> const *const matrix_b_p,
                            int gpu_num,
-                           GpuComputationInterface *compute_interface);
+                           std::unique_ptr<GpuComputationInterface> compute_interface);
 
   ~MixedPrecisionGpuContext() override;
 
@@ -179,14 +241,14 @@ class MixedPrecisionGpuContext : public GpuContext {
  protected:
   GpuDataHandler<P_in, P_out> data_handler_;
   cudaStream_t stream_;
-  cublasHandle_t cublas_handle_;
-  GpuComputationInterface *compute_interface_;
+  std::unique_ptr<GpuComputationInterface> compute_interface_;
 };
 
 extern template class GpuDataHandler<half_float::half, half_float::half>;
 extern template class GpuDataHandler<half_float::half, float>;
 extern template class GpuDataHandler<float, float>;
 extern template class GpuDataHandler<double, double>;
+extern template class GpuDataHandler<int8_t, int8_t>;
 extern template class GpuDataHandler<int8_t, int32_t>;
 extern template class GpuDataHandler<int8_t, float>;
 
@@ -195,6 +257,7 @@ extern template class MixedPrecisionHostContext<half_float::half,
 extern template class MixedPrecisionHostContext<half_float::half, float>;
 extern template class MixedPrecisionHostContext<float, float>;
 extern template class MixedPrecisionHostContext<double, double>;
+extern template class MixedPrecisionHostContext<int8_t, int8_t>;
 extern template class MixedPrecisionHostContext<int8_t, int32_t>;
 extern template class MixedPrecisionHostContext<int8_t, float>;
 
