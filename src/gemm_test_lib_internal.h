@@ -51,7 +51,7 @@ class GpuComputationInterface {
   // Account for any context-specific initialization. Most backends do not need any setup, but
   // the cublasLT API requires some parameter settings that are dependent on matrix options, which
   // we don't want to put in the critical path.
-  virtual cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) {return CUBLAS_STATUS_SUCCESS;}
+  virtual cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) = 0;
 };
 
 // Modern interface for compute capability >= 5.0. Allows half and mixed
@@ -69,7 +69,13 @@ class CudaCublasInterface final : public GpuComputationInterface {
 
   cublasStatus_t SetStream(const cudaStream_t stream_id) override;
 
- private:
+   cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) override {
+
+       LOG(INFO) <<"Called";
+       return CUBLAS_STATUS_SUCCESS;
+   }
+
+private:
   cublasHandle_t cublas_handle_;
 
 };
@@ -89,7 +95,11 @@ class LegacyCudaCublasInterface final : public GpuComputationInterface {
                                             void *C) override;
 
    cublasStatus_t SetStream(const cudaStream_t stream_id) override;
-    private:
+    cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) override {
+        LOG(INFO) <<"Called";
+        return CUBLAS_STATUS_SUCCESS;
+    }
+        private:
         cublasHandle_t cublas_handle_;
 };
 
@@ -106,9 +116,18 @@ class CudaInt8TensorInterface final: public GpuComputationInterface {
                                           void *C) override;
 
     cublasStatus_t SetStream(const cudaStream_t stream_id) override;
-    InitializeCublasSettings(const ContextOption & options) override;
+    cublasStatus_t InitializeCublasSettings(const ContextOption &context_options) override;
 
   private:
+    // Layout description constants.
+    static constexpr cublasLtOrder_t kMatrixACLayout = CUBLASLT_ORDER_COL32;
+    static constexpr cublasLtOrder_t kMatrixBLayout = CUBLASLT_ORDER_COL4_4R2_8C;
+    // Transpose operation constants.
+    static constexpr cublasOperation_t kTransOpA = CUBLAS_OP_N;
+    static constexpr cublasOperation_t kTransOpB = CUBLAS_OP_T;
+    // Pointer mode constant.
+    static constexpr  cublasPointerMode_t kPointerMode = CUBLAS_POINTER_MODE_DEVICE;
+
     cublasLtHandle_t cublas_handle_;
     cudaStream_t stream_;
     // CUDA math operation descriptor.
@@ -229,6 +248,7 @@ extern template class GpuDataHandler<half_float::half, half_float::half>;
 extern template class GpuDataHandler<half_float::half, float>;
 extern template class GpuDataHandler<float, float>;
 extern template class GpuDataHandler<double, double>;
+extern template class GpuDataHandler<int8_t, int8_t>;
 extern template class GpuDataHandler<int8_t, int32_t>;
 extern template class GpuDataHandler<int8_t, float>;
 
@@ -237,6 +257,7 @@ extern template class MixedPrecisionHostContext<half_float::half,
 extern template class MixedPrecisionHostContext<half_float::half, float>;
 extern template class MixedPrecisionHostContext<float, float>;
 extern template class MixedPrecisionHostContext<double, double>;
+extern template class MixedPrecisionHostContext<int8_t, int8_t>;
 extern template class MixedPrecisionHostContext<int8_t, int32_t>;
 extern template class MixedPrecisionHostContext<int8_t, float>;
 

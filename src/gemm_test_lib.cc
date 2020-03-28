@@ -43,8 +43,12 @@ std::unique_ptr<HostContext> HostContext::Create(ContextOption *options) {
   ProcessContextOptionPrecision(options);
 
   if (options->data_type_in == "int8" && options->data_type_out == "int32") {
-    return absl::make_unique<internal::MixedPrecisionHostContext<
-        int8_t, int32_t>>(*options);
+      return absl::make_unique < internal::MixedPrecisionHostContext <
+             int8_t, int32_t >> (*options);
+  } else if (options->data_type_in == "int8" &&
+           options->data_type_out == "int8") {
+      return absl::make_unique<
+             internal::MixedPrecisionHostContext<int8_t, int8_t>>(*options);
   } else if (options->data_type_in == "int8" &&
              options->data_type_out == "single") {
     return absl::make_unique<
