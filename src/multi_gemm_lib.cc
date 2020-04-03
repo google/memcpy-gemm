@@ -14,11 +14,6 @@
 
 #include "src/multi_gemm_lib.h"
 
-#include <unistd.h>
-
-#include "absl/random/random.h"
-
-
 template <class T>
 T *CudaRandomMatrix<T>::Allocate(size_t nr_bytes) {
   return reinterpret_cast<T *>(memory_allocator_->AllocateHostMemory(nr_bytes));
@@ -35,24 +30,3 @@ template class CudaRandomMatrix<int8_t>;
 template class CudaRandomMatrix<half_float::half>;
 template class CudaRandomMatrix<float>;
 template class CudaRandomMatrix<double>;
-
-template <class T>
-HostContext<T>::HostContext(
-    size_t M, size_t N, size_t K, absl::BitGen *rng, bool nv_gauss,
-    platforms_gpus::gemm_test::MemoryAllocatorInterface *memory_allocator,
-    bool transa, bool transb)
-    : dim_size_m_(M),
-      dim_size_n_(N),
-      dim_size_k_(K),
-      transa_(transa),
-      transb_(transb),
-      a_(M, K, memory_allocator),
-      b_(K, N, memory_allocator) {
-  a_.Initialize(rng, /*scale=*/1e30, nv_gauss);
-  b_.Initialize(rng, /*scale=*/1e-30, nv_gauss);
-}
-
-template class HostContext<float>;
-template class HostContext<double>;
-
-

@@ -32,7 +32,6 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "src/gemm_test_lib.h"
-#include "src/multi_gemm_lib.h"
 #include "cuda/include/cuda_runtime.h"
 
 namespace platforms_gpus {
@@ -222,8 +221,8 @@ class BaseComputeStream : public CopyThread {
 template <class T>
 class ComputeStream : public BaseComputeStream {
  public:
-  ComputeStream(std::shared_ptr<HostContext<T>> host_context, int gpu_number,
-                const PulseBarrier *pulse_barrier)
+  ComputeStream(std::shared_ptr<gemm_test::HostContext> host_context,
+                int gpu_number, const PulseBarrier *pulse_barrier)
       : host_context_(std::move(host_context)),
         gpu_context_(absl::make_unique<gemm_test::GpuContext>(
             host_context_.get(), gpu_number)),
@@ -254,7 +253,7 @@ class ComputeStream : public BaseComputeStream {
   }
 
  private:
-  std::shared_ptr<HostContext<T>> host_context_;
+  std::shared_ptr<gemm_test::HostContext> host_context_;
   std::unique_ptr<gemm_test::GpuContext> gpu_context_;
   const PulseBarrier *pulse_barrier_;
 };

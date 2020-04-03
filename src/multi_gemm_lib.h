@@ -70,35 +70,6 @@ class CudaRandomMatrix : public RandomMatrix<T> {
   platforms_gpus::gemm_test::MemoryAllocatorInterface *memory_allocator_;
 };
 
-template <class T>
-class HostContext {
- public:
-  HostContext(
-      size_t M, size_t N, size_t K, absl::BitGen *rng, bool nv_gauss,
-      platforms_gpus::gemm_test::MemoryAllocatorInterface *memory_allocator,
-      bool transa = false, bool transb = false);
-
-  T *GetA() { return a_.Get(); }
-  T *GetB() { return b_.Get(); }
-  const size_t GetDimSizeK() { return dim_size_k_; }
-  const size_t GetDimSizeM() { return dim_size_m_; }
-  const size_t GetDimSizeN() { return dim_size_n_; }
-  const bool GetTransa() { return transa_; }
-  const bool GetTransb() { return transb_; }
-
- protected:
-  size_t dim_size_m_;
-  size_t dim_size_n_;
-  size_t dim_size_k_;
-
-  // whether matrices A and B are transposed before being multiplied
-  bool transa_;
-  bool transb_;
-
-  CudaRandomMatrix<T> a_;
-  CudaRandomMatrix<T> b_;
-};
-
 extern template class CudaRandomMatrix<int8_t>;
 extern template class CudaRandomMatrix<half_float::half>;
 extern template class CudaRandomMatrix<float>;

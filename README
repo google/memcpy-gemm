@@ -81,4 +81,4 @@ of device).
 | half              | half               | half                | cc >= 6.0      | same as fp_precision = 'half'
 | half              | single             | single              | cc >= 6.0      | commonly called 'mixed precision'
 | int8              | int32              | int32               | cc >= 7.0      |
-| int8              | single             | single              | cc >= 7.0      |
+| int8              | single             | single              | cc >= 7.0      | On cc >= 7.5, can use tensor cores.

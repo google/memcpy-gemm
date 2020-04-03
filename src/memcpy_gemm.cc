@@ -42,7 +42,6 @@
 #include "src/cuda_check.h"
 #include "src/gemm_test_lib.h"
 #include "src/memcpy_gemm_lib.h"
-#include "src/multi_gemm_lib.h"
 #include "cuda/include/cuda_runtime.h"
 #include "re2/re2.h"
 
@@ -233,16 +232,17 @@ int main(int argc, char **argv) {
 
   setvbuf(stdout, nullptr, _IOLBF, 0);
 
-  const int32_t batch_size = absl::GetFlag(FLAGS_batch_size);
-  const int32_t buffer_size_KiB = absl::GetFlag(FLAGS_buffer_size_KiB);
-
-  CHECK_GE(batch_size, 1);
-  CHECK_GE(buffer_size_KiB, 4);
   const std::string flow_model = absl::GetFlag(FLAGS_flow_model);
   CHECK(flow_model == "thread-per-flow" || flow_model == "event-poll" ||
         flow_model == "thread-per-gpu");
 
-  size_t buffer_size = static_cast<size_t>(buffer_size_KiB* 1024);
+  const int32_t batch_size = absl::GetFlag(FLAGS_batch_size);
+  CHECK_GE(batch_size, 1);
+
+  const int buffer_size_KiB = absl::GetFlag(FLAGS_buffer_size_KiB);
+  CHECK_GE(buffer_size_KiB, 4);
+  const size_t buffer_size = static_cast<size_t>(buffer_size_KiB) * 1024;
+
   pgmg::BufferPool pool(buffer_size);
   LogEachDeviceOnce dev_logger;
   PeerEachDeviceOnce peering_pal;

@@ -8,25 +8,41 @@
 namespace platforms_gpus::gemm_test::internal {
 namespace {
 
+#if CUDA_VERSION >= 10010
+TEST(SelectGemmInterfaceTest, Int8Tensor) {
+  auto result = SelectGemmInterface("int8", "int32", "int32", 7.5);
+  EXPECT_NE(nullptr, dynamic_cast<CudaInt8TensorInterface*>(result.get()));
+}
+#endif
+
+TEST(SelectGemmInterfaceTest, Int8NonTensor) {
+  auto result = SelectGemmInterface("int8", "int32", "int32", 7.0);
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+}
+
 TEST(SelectGemmInterfaceTest, ModernInterface) {
-  auto result = SelectGemmInterface("half", 7.0);
+  auto result = SelectGemmInterface("half", "half", "half", 7.0);
   EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, LegacySinglePrecision) {
-  auto result = SelectGemmInterface("single", 3.0);
+  auto result = SelectGemmInterface("single", "single", "single", 3.0);
   EXPECT_NE(nullptr,
             dynamic_cast<LegacyCudaCublasInterface<float>*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, LegacyDoublePrecision) {
-  auto result = SelectGemmInterface("double", 3.0);
+  auto result = SelectGemmInterface("double", "double", "double", 3.0);
   EXPECT_NE(nullptr,
             dynamic_cast<LegacyCudaCublasInterface<double>*>(result.get()));
 }
 
-TEST(SelectGemmInterfaceTest, Failure) {
-  EXPECT_EQ(nullptr, SelectGemmInterface("half", 3.0));
+TEST(SelectGemmInterfaceTest, FailuresDueToInadequateComputeCap) {
+  EXPECT_EQ(nullptr, SelectGemmInterface("half", "half", "half", 3.0));
+}
+
+TEST(SelectGemmInterfaceTest, FailuresDueToUnknownTypes) {
+  EXPECT_EQ(nullptr, SelectGemmInterface("quarter", "triple", "bytes", 3.0));
 }
 
 TEST(GpuDataHandlerTest, DestructsSafelyWithoutAllocation) {
@@ -163,10 +179,6 @@ class LegacyCublasTest : public ::testing::Test {
  public:
   LegacyCublasTest() {
     CUDA_CHECK(cudaStreamCreate(&stream_));
-    CUBLAS_CHECK(cublasCreate(&cublas_handle_));
-    CUBLAS_CHECK(cublasSetStream(cublas_handle_, stream_));
-    CUBLAS_CHECK(
-        cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
     options_.dim_size_m = 2048;
     options_.dim_size_n = 2048;
     options_.dim_size_k = 2048;
@@ -177,13 +189,11 @@ class LegacyCublasTest : public ::testing::Test {
 
   ~LegacyCublasTest() override {
     CUDA_CHECK(cudaStreamDestroy(stream_));
-    CUBLAS_CHECK(cublasDestroy(cublas_handle_));
   };
 
  protected:
   ContextOption options_;
   cudaStream_t stream_;
-  cublasHandle_t cublas_handle_;
 };
 
 TYPED_TEST_SUITE_P(LegacyCublasTest);
@@ -203,10 +213,10 @@ TYPED_TEST_P(LegacyCublasTest, LegacyCublas) {
       this->options_, this->stream_, &data_handler);
 
   LegacyCudaCublasInterface<InputPrecision> cublas;
+  cublas.Initialize(this->stream_, this->options_);
   CUBLAS_CHECK(cublas.MatrixMultiComputation(
-      this->options_, this->cublas_handle_, data_handler.Alpha(),
-      data_handler.InputA(), data_handler.InputB(), data_handler.Beta(),
-      data_handler.Output()));
+      this->options_, data_handler.Alpha(), data_handler.InputA(),
+      data_handler.InputB(), data_handler.Beta(), data_handler.Output()));
   CUDA_CHECK(cudaStreamSynchronize(this->stream_));
 }
 
@@ -223,10 +233,6 @@ class ModernCublasTest : public ::testing::Test {
  public:
   ModernCublasTest() {
     CUDA_CHECK(cudaStreamCreate(&stream_));
-    CUBLAS_CHECK(cublasCreate(&cublas_handle_));
-    CUBLAS_CHECK(cublasSetStream(cublas_handle_, stream_));
-    CUBLAS_CHECK(
-        cublasSetPointerMode(cublas_handle_, CUBLAS_POINTER_MODE_DEVICE));
     options_.dim_size_m = 2048;
     options_.dim_size_n = 2048;
     options_.dim_size_k = 2048;
@@ -237,13 +243,11 @@ class ModernCublasTest : public ::testing::Test {
 
   ~ModernCublasTest() override {
     CUDA_CHECK(cudaStreamDestroy(stream_));
-    CUBLAS_CHECK(cublasDestroy(cublas_handle_));
   };
 
  protected:
   ContextOption options_;
   cudaStream_t stream_;
-  cublasHandle_t cublas_handle_;
 };
 
 TYPED_TEST_SUITE_P(ModernCublasTest);
@@ -254,7 +258,7 @@ TYPED_TEST_P(ModernCublasTest, ModernCublas) {
 
   this->options_.data_type_in = StringRep<InputPrecision>();
   this->options_.data_type_out = StringRep<OutputPrecision>();
-  this->options_.compute_type = StringRep<OutputPrecision>();
+  this->options_.compute_type = TypeParam::Compute();
 
   GpuDataHandler<InputPrecision, OutputPrecision> data_handler;
   // Set up some random data on the GPU for us to compute on, we dont' care
@@ -263,10 +267,10 @@ TYPED_TEST_P(ModernCublasTest, ModernCublas) {
       this->options_, this->stream_, &data_handler);
 
   CudaCublasInterface cublas;
+  cublas.Initialize(this->stream_, this->options_);
   CUBLAS_CHECK(cublas.MatrixMultiComputation(
-      this->options_, this->cublas_handle_, data_handler.Alpha(),
-      data_handler.InputA(), data_handler.InputB(), data_handler.Beta(),
-      data_handler.Output()));
+      this->options_, data_handler.Alpha(), data_handler.InputA(),
+      data_handler.InputB(), data_handler.Beta(), data_handler.Output()));
   CUDA_CHECK(cudaStreamSynchronize(this->stream_));
 }
 

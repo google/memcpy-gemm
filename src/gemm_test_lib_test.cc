@@ -116,7 +116,7 @@ TYPED_TEST_P(HostContextTest, CreateHostContextSuccess) {
 
   auto host_context = absl::make_unique<
       internal::MixedPrecisionHostContext<InputType, OutputType>>(
-      this->options_, std::move(memory_allocator), std::move(cublas));
+      this->options_, std::move(memory_allocator));
 
   ASSERT_THAT(host_context, NotNull());
   EXPECT_EQ(this->options_.dim_size_m, host_context->GetDimSizeM());

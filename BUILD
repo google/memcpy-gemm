@@ -30,8 +30,6 @@ cc_library(
     deps = [
         ":matrix_lib",
         "@absl//absl/random",
-        "@absl//absl/strings:str_format",
-        "@absl//absl/time",
         "@cuda//:cublas_static",
         "@cuda//:cuda_headers",
         "@cuda//:cuda_runtime",
