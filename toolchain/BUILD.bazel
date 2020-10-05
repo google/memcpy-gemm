@@ -1,6 +1,7 @@
 """ Contains build rule for static memcpy-gemm toolchain """
 
 load("//toolchain:cc_toolchain_config.bzl", "cc_toolchain_config")
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -26,4 +27,9 @@ cc_toolchain(
     supports_param_files = 0,
     toolchain_config = ":static_toolchain_config",
     toolchain_identifier = "static-toolchain",
+)
+
+bzl_library(
+    name = "cc_toolchain_config_bzl",
+    srcs = ["cc_toolchain_config.bzl"],
 )

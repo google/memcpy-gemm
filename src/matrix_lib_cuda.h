@@ -12,25 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "src/multi_gemm_lib.h"
+#ifndef THIRD_PARTY_GPU_TEST_UTILS_MATRIX_LIB_CUDA_H_
+#define THIRD_PARTY_GPU_TEST_UTILS_MATRIX_LIB_CUDA_H_
 
-template <class T>
-T *CudaRandomMatrix<T>::Allocate(size_t nr_bytes) {
-  return reinterpret_cast<T *>(memory_allocator_->AllocateHostMemory(nr_bytes));
-}
+#include "src/matrix_lib.h"
+#include "cuda/include/cuda.h"
 
-template <class T>
-CudaRandomMatrix<T>::~CudaRandomMatrix() {
-  if (Base::host_memory_) {
-    memory_allocator_->FreeHostMemory(Base::host_memory_);
-  }
-}
-
-template class CudaRandomMatrix<int8_t>;
-template class CudaRandomMatrix<half_float::half>;
-template class CudaRandomMatrix<float>;
-template class CudaRandomMatrix<double>;
+// BF16 requires CUDA 11.0
+#define BF16_CUDA_VERSION 11000
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
-template class CudaRandomMatrix<nv_bfloat16>;
+#include "cuda/include/cuda_bf16.h"
+
+extern template class RandomMatrix<nv_bfloat16>;
 #endif
+
+#endif  // THIRD_PARTY_GPU_TEST_UTILS_MATRIX_LIB_CUDA_H_

@@ -22,7 +22,6 @@
 
 #include "absl/strings/string_view.h"
 #include "src/gemm_test_lib.h"
-#include "src/matrix_lib.h"
 #include "src/memory_allocator_interface.h"
 #include "src/multi_gemm_lib.h"
 #include "cuda/include/cublas_api.h"
@@ -31,6 +30,9 @@
 #if CUDA_VERSION >= 10010
 #include "cuda/include/cublasLt.h"
 #endif
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+#include "cuda/include/cuda_bf16.h";
+#endif
 
 namespace platforms_gpus {
 namespace gemm_test {
@@ -38,7 +40,9 @@ namespace internal {
 
 // This abstract class serves as an interface for cuda cublasGemmEx API that
 // utilized by gemm_test. The actual backend cuBLAS call depends on the data
-// types and GPU compute capability.
+// types and GPU compute capability. This class is also responsible for
+// backend-dependent setup. Each compute thread should have a single compute
+// interface.
 class GpuComputationInterface {
  public:
   virtual ~GpuComputationInterface() {}
@@ -99,12 +103,10 @@ class LegacyCudaCublasInterface final : public GpuComputationInterface {
 };
 
 #if CUDA_VERSION >= 10010
-// cublasLT backend for int8 tensor operations.
-class CudaInt8TensorInterface final : public GpuComputationInterface {
+class CudaCublasLtInterface final : public GpuComputationInterface {
  public:
-  CudaInt8TensorInterface() {}
-
-  ~CudaInt8TensorInterface() override;
+  CudaCublasLtInterface() {}
+  ~CudaCublasLtInterface() override;
 
   cublasStatus_t MatrixMultiComputation(const ContextOption &context_options,
                                         const void *alpha, const void *A,
@@ -114,16 +116,18 @@ class CudaInt8TensorInterface final : public GpuComputationInterface {
   void Initialize(cudaStream_t stream,
                   const ContextOption &context_options) override;
 
+  std::vector<cublasLtMatmulHeuristicResult_t> GetHeuristicResults(int maxNum);
+
  private:
-  // Layout description constants.
-  static constexpr cublasLtOrder_t kMatrixACLayout = CUBLASLT_ORDER_COL32;
-  static constexpr cublasLtOrder_t kMatrixBLayout = CUBLASLT_ORDER_COL4_4R2_8C;
   // Transpose operation constants.
   static constexpr cublasOperation_t kTransOpA = CUBLAS_OP_N;
   static constexpr cublasOperation_t kTransOpB = CUBLAS_OP_T;
   // Pointer mode constant.
   static constexpr cublasPointerMode_t kPointerMode =
       CUBLAS_POINTER_MODE_DEVICE;
+
+  size_t workspacesize_ = 0;
+  void *workspace_ = nullptr;
 
   cublasLtHandle_t cublas_handle_ = nullptr;
   // There is no cublasSetStream equivalent for cublasLT. Instead, we store
@@ -141,16 +145,15 @@ class CudaInt8TensorInterface final : public GpuComputationInterface {
 // Selects and creates a GEMM interface based on the precision of computation to
 // be done and the capabilities of the GPU.
 std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
-    absl::string_view input_type, absl::string_view output_type,
-    absl::string_view compute_type, float compute_capability);
+    const ContextOption &options, const ComputeCapability &compute_capability);
 
 // GpuDataHandler stores pointers to GPU data, and handles allocation and
 // freeing of those pointers. A GpuDataHandler is assigned to a single GPU.
 // Allocation failures lead to immediate program exit.
 // TODO: Return error status rather than crashing program on
 // CUDA allocation failures.
-// TODO: Template on compute type.
-template <typename InputPrecision, typename OutputPrecision>
+template <typename InputPrecision, typename OutputPrecision,
+          typename ComputePrecision>
 class GpuDataHandler {
  public:
   GpuDataHandler() = default;
@@ -162,35 +165,23 @@ class GpuDataHandler {
                   const RandomMatrix<InputPrecision> *data_in_b,
                   const cudaStream_t stream);
 
-  void SetComputeType(absl::string_view compute_type) {
-    compute_type_ = compute_type;
-  }
+  // Changes the GPU to which data will be copied.
   void SetGpuId(const int id) { gpu_id_ = id; }
 
   // Accessors.
   InputPrecision *InputA() const { return input_a_; }
   InputPrecision *InputB() const { return input_b_; }
   OutputPrecision *Output() const { return output_; }
-  void *Alpha() const { return alpha_; }
-  void *Beta() const { return beta_; }
+  void *Alpha() const { return static_cast<void *>(alpha_); }
+  void *Beta() const { return static_cast<void *>(beta_); }
 
  private:
   // Data will be allocated on this GPU
   int gpu_id_ = 0;
 
-  // Precision in which GEMM operations on this data will be performed. This
-  // determines the data type of the scaling factors. Must be one of "single"
-  // "double", "half", or "int32".
-  std::string compute_type_;
-
-  // Input (alpha_) and output (beta_) scaling factors. On the device these
-  // factors should be the same type as ComputeType The addresses for
-  // alpha_ and beta_should be aligned with ComputeType.
-  // Note that ComputeType could be different than the input or output types.
-  // One example is that both input and output matrices are half type, while
-  // ComputeType could be float type.
-  void *alpha_ = nullptr;
-  void *beta_ = nullptr;
+  // Input (alpha_) and output (beta_) scaling factors.
+  ComputePrecision *alpha_ = nullptr;
+  ComputePrecision *beta_ = nullptr;
 
   // Input and output matrices.
   InputPrecision *input_a_ = nullptr;
@@ -200,8 +191,7 @@ class GpuDataHandler {
 
 // Derived and templated classes of HostContext class. Used to instantiate
 // HostContext with different data input/output combinations.
-// TODO: Template on compute type.
-template <typename P_in, typename P_out>
+template <typename P_in, typename P_out, typename P_compute>
 class MixedPrecisionHostContext : public HostContext {
  public:
   explicit MixedPrecisionHostContext(const ContextOption &options);
@@ -221,7 +211,7 @@ class MixedPrecisionHostContext : public HostContext {
 
 // Derived and templated classes of GpuContext class. Used to instantiate
 // GpuContext with different data input/output combinations.
-template <typename P_in, typename P_out>
+template <typename P_in, typename P_out, typename P_compute>
 class MixedPrecisionGpuContext : public GpuContext {
  public:
   MixedPrecisionGpuContext(
@@ -237,26 +227,34 @@ class MixedPrecisionGpuContext : public GpuContext {
 
   void LaunchKernel() override;
 
+  void AutoTuning() override;
  protected:
-  GpuDataHandler<P_in, P_out> data_handler_;
+  GpuDataHandler<P_in, P_out, P_compute> data_handler_;
   cudaStream_t stream_;
   std::unique_ptr<GpuComputationInterface> compute_interface_;
 };
 
-extern template class GpuDataHandler<half_float::half, half_float::half>;
-extern template class GpuDataHandler<half_float::half, float>;
-extern template class GpuDataHandler<float, float>;
-extern template class GpuDataHandler<double, double>;
-extern template class GpuDataHandler<int8_t, int32_t>;
-extern template class GpuDataHandler<int8_t, float>;
+extern template class GpuDataHandler<half_float::half, half_float::half,
+                                     half_float::half>;
+extern template class GpuDataHandler<half_float::half, float, float>;
+extern template class GpuDataHandler<float, float, float>;
+extern template class GpuDataHandler<double, double, double>;
+extern template class GpuDataHandler<int8_t, int32_t, int32_t>;
+extern template class GpuDataHandler<int8_t, float, float>;
 
-extern template class MixedPrecisionHostContext<half_float::half,
-                                                half_float::half>;
-extern template class MixedPrecisionHostContext<half_float::half, float>;
-extern template class MixedPrecisionHostContext<float, float>;
-extern template class MixedPrecisionHostContext<double, double>;
-extern template class MixedPrecisionHostContext<int8_t, int32_t>;
-extern template class MixedPrecisionHostContext<int8_t, float>;
+extern template class MixedPrecisionHostContext<
+    half_float::half, half_float::half, half_float::half>;
+extern template class MixedPrecisionHostContext<half_float::half, float, float>;
+extern template class MixedPrecisionHostContext<float, float, float>;
+extern template class MixedPrecisionHostContext<double, double, double>;
+extern template class MixedPrecisionHostContext<int8_t, int32_t, int32_t>;
+extern template class MixedPrecisionHostContext<int8_t, float, float>;
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+extern template class GpuDataHandler<nv_bfloat16, nv_bfloat16, nv_bfloat16>;
+extern template class MixedPrecisionHostContext<nv_bfloat16, nv_bfloat16,
+                                                nv_bfloat16>;
+#endif
 
 }  // namespace internal
 }  // namespace gemm_test

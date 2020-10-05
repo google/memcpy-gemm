@@ -82,3 +82,31 @@ of device).
 | half              | single             | single              | cc >= 6.0      | commonly called 'mixed precision'
 | int8              | int32              | int32               | cc >= 7.0      |
 | int8              | single             | single              | cc >= 7.0      | On cc >= 7.5, can use tensor cores.
+
+### Memory Usage
+
+memcpy-GEMM allocates CPU and GPU memory for both memcpy and GEMM operations. For
+memcpy tests, memcpy-gemm allocates a buffer on both the source and destination
+devices (be it a CPU or GPU), with the size equal to the number of kilobytes
+specified by the buffer_size_KiB flag. Buffers are not reused between flows, so
+(for example) with flows 'c0-g0-a0 g0-g1-a1', GPU0 will allocate 2 buffers, one
+for each flow.
+
+GEMM calls allocate two input arrays and one ouput array on each device specified
+in the --gpus flag, if the --gemm option is set to true. The total number of bytes
+allocated is then:
+bytes = (dim1_matrix1 * dim2_matrix1 * sizeof(input precision)) + \
+        (dim1_matrix2 * dim2_matrix2 * sizeof(input precision)) + \
+        (dim1_output_matrix * dim2_ouput_matrix * sizeof(output precision))
+If M=N=K, using N as the dimension, this simplifies to:
+bytes = 2 * (N^2 * sizeof(input precision)) + N^2 * sizeof(output precision)
+
+Supported sizes of precisions are:
+int8 - 1 byte
+half - 2 bytes
+bf16 - 2 bytes
+single - 4 bytes
+int32 - 4 bytes
+double - 8 bytes
+
+In addition, expect a small GPU memory overhead from the cublas environment initializations.

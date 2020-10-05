@@ -23,10 +23,15 @@
 #include "absl/random/random.h"
 #include "src/cuda_check.h"
 #include "src/matrix_lib.h"
+#include "src/matrix_lib_cuda.h"
 #include "src/memory_allocator_interface.h"
 #include "cuda/include/cublas_v2.h"
 #include "cuda/include/cuda_runtime.h"
 #include "include/half.hpp"
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+#include "cuda/include/cuda_bf16.h"
+#endif
 
 // The concrete class wraps real memory allocation APIs
 class CudaMemoryAllocator final
@@ -74,5 +79,10 @@ extern template class CudaRandomMatrix<int8_t>;
 extern template class CudaRandomMatrix<half_float::half>;
 extern template class CudaRandomMatrix<float>;
 extern template class CudaRandomMatrix<double>;
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+extern template class CudaRandomMatrix<nv_bfloat16>;
+#endif
+
 
 #endif  // PLATFORMS_GPUS_TESTING_NVIDIA_MULTI_GEMM_LIB_H_

@@ -26,9 +26,34 @@
 #include "cuda/include/cublas_v2.h"
 #include "cuda/include/cuda.h"
 #include "cuda/include/cuda_runtime.h"
+#if CUDA_VERSION >= 10010
+#include "cuda/include/cublasLt.h"
+#endif  // CUDA_VERSION >= 10010
 
 namespace platforms_gpus {
 namespace gemm_test {
+
+// Describes the compute capability of a GPU. NVIDIA typically
+// reports compute capability as a float, with value {major}.{minor}.
+// For example, a Tesla T4 has compute capability 7.5, so major=7, minor=5.
+struct ComputeCapability {
+  int major = 0;
+  int minor = 0;
+};
+
+// Detects the compute capability of GPU 0.
+ComputeCapability GetComputeCapability();
+
+// Checks that the combination of GEMM input/output/compute precisions is
+// supported on the hardware.
+bool GemmPrecisionIsSupported(const ComputeCapability &compute_capability,
+                              absl::string_view input_precision,
+                              absl::string_view output_precision,
+                              absl::string_view compute_precision);
+
+// Converts a vector of strings of GPU IDs to a vector of ints. Program
+// exits on parse failure.
+std::vector<int64_t> ParseGpuIDsOrDie(absl::Span<const std::string> gpus);
 
 class HostContext;
 
@@ -75,6 +100,15 @@ struct ContextOption {
   // "gemm_tensor_algo_default", "gemm_tensor_algo_0", "gemm_tensor_algo_1",
   // "gemm_tensor_algo_2", "gemm_tensor_algo_3", "gemm_tensor_algo_4".
   std::string algorithm = "gemm_algo_default";
+
+#if CUDA_VERSION >= 10010
+  // algo only applies for cublasLT heuristic algorithm determination
+  // AutoTuning will generate this algo value.
+  absl::optional<cublasLtMatmulAlgo_t> algo;
+#endif  //  CUDA_VERSION >= 10010
+
+  // TODO Currently Just specified, will set cublasLt as default
+  bool use_cublasLt_ = false;
 };
 
 // The base class for GpuContext objects. It Contains common functions and data
@@ -95,15 +129,18 @@ class GpuContext {
   const size_t GetDimSizeN() { return options_.dim_size_n; }
   const bool GetTransa() { return options_.transa; }
   const bool GetTransb() { return options_.transb; }
-  void ResetLoopCount () { loop_count_ = 0; }
-  void IncLoopCount () { ++loop_count_; }
-  int GetLoopCount () const { return loop_count_; }
+  void ResetLoopCount() { loop_count_ = 0; }
+  void IncLoopCount() { ++loop_count_; }
+  int GetLoopCount() const { return loop_count_; }
+  int GetGpuIndex() const { return gpu_num_; }
   // Block host until the stream has completed all operations.
   virtual void StreamSynchronize() = 0;
   virtual cudaError_t StreamQuery() = 0;
 
   // Run kernel on GPU.
   virtual void LaunchKernel() = 0;
+
+  virtual void AutoTuning() = 0;
 
  protected:
   GpuContext() {}

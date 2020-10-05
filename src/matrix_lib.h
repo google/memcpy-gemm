@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef PLATFORMS_GPUS_TESTING_NVIDIA_MATRIX_LIB_H_
-#define PLATFORMS_GPUS_TESTING_NVIDIA_MATRIX_LIB_H_
+#ifndef THIRD_PARTY_GPU_TEST_UTILS_MATRIX_LIB_H_
+#define THIRD_PARTY_GPU_TEST_UTILS_MATRIX_LIB_H_
 
 #include <stddef.h>
 
 #include <memory>
 
 #include "absl/random/random.h"
+#include "include/half.hpp"
 
 // Represents a MxK matrix of random values.
 template <typename T>
@@ -56,4 +57,9 @@ class RandomMatrix {
   std::unique_ptr<T[]> internal_allocation_;
 };
 
-#endif  // PLATFORMS_GPUS_TESTING_NVIDIA_MATRIX_LIB_H_
+extern template class RandomMatrix<int8_t>;
+extern template class RandomMatrix<float>;
+extern template class RandomMatrix<double>;
+extern template class RandomMatrix<half_float::half>;
+
+#endif  // THIRD_PARTY_GPU_TEST_UTILS_MATRIX_LIB_H_

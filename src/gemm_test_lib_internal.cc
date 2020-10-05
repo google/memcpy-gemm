@@ -14,14 +14,25 @@
 
 #include "src/gemm_test_lib_internal.h"
 
+#include <cstddef>
 #include <cstdint>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
+#include "absl/strings/escaping.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 #include "src/matrix_lib.h"
+#include "cuda/include/cuda.h"
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+#include "cuda/include/cuda_bf16.h"
+#endif
+
+namespace platforms_gpus {
+namespace gemm_test {
+namespace internal {
 
 namespace {
 // This class is instantiated when registering a device to be used for GPU
@@ -39,13 +50,35 @@ class WithCUDADevice {
   int old_gpu_num_;
 };
 
+cudaDataType_t GetCudaDataType(absl::string_view data_type) {
+  static const absl::flat_hash_map<absl::string_view, cudaDataType_t>
+      data_mapping {
+    {"half", CUDA_R_16F}, {"single", CUDA_R_32F}, {"double", CUDA_R_64F},
+        {"int8", CUDA_R_8I}, {"int32", CUDA_R_32I},
+#if CUDA_VERSION >= 11000
+        {"bf16", CUDA_R_16BF},
+#endif  // CUDA_VERSION >= 11000
+  };
+
+  if (const auto it = data_mapping.find(data_type); it != data_mapping.end()) {
+    return it->second;
+  }
+  LOG(ERROR) << absl::Substitute(
+      "Unsupported compute type '$0', using double type.", data_type);
+  return CUDA_R_64F;
+}
+
+// TODO CUDA 11 cublasGemmEx uses cublasComputeType_t instead
+// of cublasDataType_t. This setup works at the moment because of enum
+// equivalence, but is very sketchy. Separate out cuda 10 vs 11 implementations.
 cudaDataType_t GetCudaComputeType(absl::string_view compute_type) {
   static const absl::flat_hash_map<absl::string_view, cudaDataType_t>
-      compute_mapping{{"half", CUDA_R_16F},
-                      {"single", CUDA_R_32F},
-                      {"double", CUDA_R_64F},
-                      {"int8", CUDA_R_8I},
-                      {"int32", CUDA_R_32I}};
+      compute_mapping{
+          {"half", CUDA_R_16F},
+          {"single", CUDA_R_32F},
+          {"double", CUDA_R_64F},
+          {"int32", CUDA_R_32I},
+      };
 
   if (const auto it = compute_mapping.find(compute_type);
       it != compute_mapping.end()) {
@@ -55,6 +88,31 @@ cudaDataType_t GetCudaComputeType(absl::string_view compute_type) {
       "Unsupported compute type '$0', using double type.", compute_type);
   return CUDA_R_64F;
 }
+#if CUDA_VERSION >= 11000
+// In Cuda 11,  compute type is sepearated from data type
+// The newly introduced "cublasComputeType_t" changes function prototypes on the
+// API: cublasGemmEx, cublasGemmBatchedEx, and cublasGemmStridedBatchedEx have a
+// new signature that uses cublasComputeType_t for the computeType parameter.
+// Backward compatibility is ensured with internal mapping for C users and with
+// added overload for C++ users.
+// TODO will support more compute type,
+cublasComputeType_t GetNewComputeDataType(absl::string_view compute_type) {
+  static const absl::flat_hash_map<absl::string_view, cublasComputeType_t>
+      compute_mapping{
+          {"half", CUBLAS_COMPUTE_16F},
+          {"single", CUBLAS_COMPUTE_32F},
+          {"double", CUBLAS_COMPUTE_64F},
+          {"int32", CUBLAS_COMPUTE_32I},
+      };
+  if (const auto it = compute_mapping.find(compute_type);
+      it != compute_mapping.end()) {
+    return it->second;
+  }
+  LOG(ERROR) << absl::Substitute(
+      "Unsupported compute type '$0', using double type.", compute_type);
+  return CUBLAS_COMPUTE_64F;
+}
+#endif  // CUDA_VERSION >= 11000
 
 cublasGemmAlgo_t GetGemmAlgorithm(absl::string_view algorithm) {
   static const absl::flat_hash_map<absl::string_view, cublasGemmAlgo_t>
@@ -111,53 +169,69 @@ cublasGemmAlgo_t GetGemmAlgorithm(absl::string_view algorithm) {
   return CUBLAS_GEMM_DFALT;
 }
 
-// Detects the compute capability of GPU 0.
-float GetComputeCapability() {
-  WithCUDADevice device(0);
-  cudaDeviceProp dev_prop;
-  CUDA_CHECK(cudaGetDeviceProperties(&dev_prop, 0));
-  return dev_prop.major + static_cast<float>(dev_prop.minor) / 10;
+bool dataTypeIMMAKernel(const ContextOption &options) {
+  return options.data_type_in == "int8" && options.compute_type == "int32" &&
+         (options.data_type_out == "int32" || options.data_type_out == "int8");
+}
+
+// Returns true if the data layout of matrices A and B support IMMA kernel
+// accelerated int8 computation. In our current implementation, this is the case
+// if matrics A and B have identical dimensions and are square, with
+// input type int8 and output/compute type int32.
+bool OptionsSupportIMMA(const ContextOption &options) {
+  return dataTypeIMMAKernel(options) &&
+         options.dim_size_m == options.dim_size_n &&
+         options.dim_size_n == options.dim_size_k;
 }
 
 }  //  namespace
 
-namespace platforms_gpus {
-namespace gemm_test {
-namespace internal {
-
 std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
-    absl::string_view input_type, absl::string_view output_type,
-    absl::string_view compute_type, float compute_capability) {
+    const ContextOption &options, const ComputeCapability &compute_capability) {
 #if CUDA_VERSION >= 10010
+  // TODO Currently Only Enabled when Specified,
+  // And also disable IMMA kernel, IMMA need more transformation work
+  if (options.use_cublasLt_ && !dataTypeIMMAKernel(options)) {
+    LOG(INFO) << "Using cublasLT for GEMM computation";
+    return absl::make_unique<CudaCublasLtInterface>();
+  }
   // Turing and later architectures support tensor int8 operations. Note that
   // this does not include compute capability == 7 (Volta), which has CUDA core
-  // only int8 support with int32 output.
-  if (input_type == "int8" && compute_capability > 7) {
+  // only int8 support with int32 output. Currently, this implementation is
+  // restricted to square matrix multiplication.
+  if (OptionsSupportIMMA(options) &&
+      (compute_capability.major > 7 ||
+       (compute_capability.major == 7 && compute_capability.minor > 0))) {
     LOG(INFO) << "Using cublasLT IMMA for GEMM computation";
-    return absl::make_unique<CudaInt8TensorInterface>();
+    return absl::make_unique<CudaCublasLtInterface>();
   }
 #endif  // CUDA_VERSION >= 10010
+
   // If on a capable machine, use the modern cublasGemmEx() wrapper which can
   // handle any combination of data types except int8 out.
-  if (compute_capability >= 5.0 && output_type != "int8") {
+  if (compute_capability.major >= 5 && options.data_type_out != "int8") {
     LOG(INFO) << "Using cublasGemmEx for GEMM computation";
     return absl::make_unique<CudaCublasInterface>();
   }
   // If on an older machine, the data type determines the function to be called.
   // Note that we don't have to worry about mixed precision, since older devices
   // do not support it.
-  if (input_type == "single" && output_type == "single" &&
-      compute_type == "single") {
+  if (options.data_type_in == "single" && options.data_type_out == "single" &&
+      options.compute_type == "single") {
     LOG(INFO) << "Using cublasSGemm for GEMM computation";
     return absl::make_unique<LegacyCudaCublasInterface<float>>();
   }
-  if (input_type == "double" && output_type == "double" &&
-      compute_type == "double") {
+  if (options.data_type_in == "double" && options.data_type_out == "double" &&
+      options.compute_type == "double") {
     LOG(INFO) << "Using cublasDGemm for GEMM computation";
     return absl::make_unique<LegacyCudaCublasInterface<double>>();
   }
   LOG(ERROR) << absl::Substitute(
-      "Unsupported data type $0 for legacy cublas interface", compute_type);
+      "Memcpy-gemm does not support the combination of:\n"
+      "input_type=$0\noutput_type=$1\ncompute_type=$2\n"
+      "with GPU compute capability $3.$4",
+      options.data_type_in, options.data_type_out, options.compute_type,
+      compute_capability.major, compute_capability.minor);
   return nullptr;
 }
 
@@ -186,13 +260,12 @@ cublasStatus_t CudaCublasInterface::MatrixMultiComputation(
                       context_options.dim_size_m, context_options.dim_size_n,
                       context_options.dim_size_k,
                       // Input arrays and scaling factors.
-                      alpha, A,
-                      GetCudaComputeType(context_options.data_type_in),
+                      alpha, A, GetCudaDataType(context_options.data_type_in),
                       context_options.dim_size_m, B,
-                      GetCudaComputeType(context_options.data_type_in),
+                      GetCudaDataType(context_options.data_type_in),
                       // Output array options.
                       context_options.dim_size_k, beta, C,
-                      GetCudaComputeType(context_options.data_type_out),
+                      GetCudaDataType(context_options.data_type_out),
                       context_options.dim_size_m,
                       // Compute options.
                       GetCudaComputeType(context_options.compute_type),
@@ -246,7 +319,10 @@ cublasStatus_t LegacyCudaCublasInterface<double>::MatrixMultiComputation(
 }
 
 #if CUDA_VERSION >= 10010
-CudaInt8TensorInterface::~CudaInt8TensorInterface() {
+CudaCublasLtInterface::~CudaCublasLtInterface() {
+  if (workspace_ != nullptr) {
+    CUDA_CHECK(cudaFree(workspace_));
+  }
   if (matmul_desc_ != nullptr) {
     cublasLtMatmulDescDestroy(matmul_desc_);
   }
@@ -264,28 +340,44 @@ CudaInt8TensorInterface::~CudaInt8TensorInterface() {
   }
 }
 
-void CudaInt8TensorInterface::Initialize(cudaStream_t stream,
-                                         const ContextOption &options) {
+void CudaCublasLtInterface::Initialize(cudaStream_t stream,
+                                       const ContextOption &options) {
   stream_ = stream;
-  const cudaDataType_t input_type = GetCudaComputeType(options.data_type_in);
-  const cudaDataType_t output_type = GetCudaComputeType(options.data_type_out);
+  // workspace size should be 256 bytes aligned.
+  // Too small  workspace size may cause some routines to fail with
+  // CUBLAS_STATUS_ALLOC_FAILED error returned or cause large regressions in
+  // performance. Workspace size equal to or larger than 16KiB is enough to
+  // prevent CUBLAS_STATUS_ALLOC_FAILED error, while a larger workspace can
+  // provide performance benefits for some routines. Recommended size of
+  // user-provided workspace is at least 4MiB (to match cuBLAS’ default
+  // workspace pool). Currently We use 16MB.
+  static constexpr size_t kWorkspaceSize = 16 * 1024 * 1024;
+  workspacesize_ = kWorkspaceSize;
+
+  const cudaDataType_t input_type = GetCudaDataType(options.data_type_in);
+  const cudaDataType_t output_type = GetCudaDataType(options.data_type_out);
   const cudaDataType_t compute_type = GetCudaComputeType(options.compute_type);
+  cublasOperation_t transA = input_type != CUDA_R_8I
+                                 ? (options.transa ? CUBLAS_OP_T : CUBLAS_OP_N)
+                                 : kTransOpA;
+  cublasOperation_t transB = input_type != CUDA_R_8I
+                                 ? (options.transb ? CUBLAS_OP_T : CUBLAS_OP_N)
+                                 : kTransOpB;
 
   CUBLAS_CHECK(cublasLtCreate(&cublas_handle_));
-
 #if CUDA_VERSION >= 11000
-  CUBLAS_CHECK(
-      cublasLtMatmulDescCreate(&matmul_desc_, CUBLAS_COMPUTE_32I, CUDA_R_32I));
+  CUBLAS_CHECK(cublasLtMatmulDescCreate(
+      &matmul_desc_, GetNewComputeDataType(options.compute_type),
+      compute_type));
 #else
-  CUBLAS_CHECK(cublasLtMatmulDescCreate(&matmul_desc_, CUDA_R_32I));
+  CUBLAS_CHECK(cublasLtMatmulDescCreate(&matmul_desc_, compute_type));
 #endif  // CUDA_VERSION >= 11000
 
-  CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(matmul_desc_,
-                                              CUBLASLT_MATMUL_DESC_TRANSA,
-                                              &kTransOpA, sizeof(kTransOpA)));
-  CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(matmul_desc_,
-                                              CUBLASLT_MATMUL_DESC_TRANSB,
-                                              &kTransOpB, sizeof(kTransOpB)));
+  CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(
+      matmul_desc_, CUBLASLT_MATMUL_DESC_TRANSA, &transA, sizeof(transA)));
+  CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(
+      matmul_desc_, CUBLASLT_MATMUL_DESC_TRANSB, &transB, sizeof(transB)));
+
   CUBLAS_CHECK(cublasLtMatmulDescSetAttribute(
       matmul_desc_, CUBLASLT_MATMUL_DESC_POINTER_MODE, &kPointerMode,
       sizeof(kPointerMode)));
@@ -304,26 +396,55 @@ void CudaInt8TensorInterface::Initialize(cudaStream_t stream,
   CUBLAS_CHECK(
       cublasLtMatrixLayoutCreate(&layout_a_, input_type, options.dim_size_m,
                                  options.dim_size_k, options.dim_size_m))
-  CUBLAS_CHECK(cublasLtMatrixLayoutSetAttribute(
-      layout_a_, CUBLASLT_MATRIX_LAYOUT_ORDER, &kMatrixACLayout,
-      sizeof(kMatrixACLayout)));
+
+  const cublasLtOrder_t matACLayout =
+      input_type != CUDA_R_8I ? CUBLASLT_ORDER_COL : CUBLASLT_ORDER_COL32;
+  CUBLAS_CHECK(
+      cublasLtMatrixLayoutSetAttribute(layout_a_, CUBLASLT_MATRIX_LAYOUT_ORDER,
+                                       &matACLayout, sizeof(matACLayout)));
   CUBLAS_CHECK(
       cublasLtMatrixLayoutCreate(&layout_b_, input_type, options.dim_size_k,
-                                 options.dim_size_n, options.dim_size_k))
-  CUBLAS_CHECK(cublasLtMatrixLayoutSetAttribute(
-      layout_b_, CUBLASLT_MATRIX_LAYOUT_ORDER, &kMatrixBLayout,
-      sizeof(kMatrixBLayout)));
+                                 options.dim_size_n, options.dim_size_k));
+
+  cublasLtOrder_t matBLayout = CUBLASLT_ORDER_COL;
+  if (input_type == CUDA_R_8I) {
+    const ComputeCapability compute_capability = GetComputeCapability();
+    if (compute_capability.major == 7 && compute_capability.minor > 0) {
+      LOG(INFO) << "Optimizing matrix layout for Turing architecture";
+      matBLayout = CUBLASLT_ORDER_COL4_4R2_8C;
+    }
+#if CUDA_VERSION >= 11000
+    // int8 compute with CUDA 11 on Ampere machines can be further optimized
+    // using a new CUDA 11 matrix layout.
+    else if (compute_capability.major >= 8) {
+      LOG(INFO) << "Optimizing matrix layout for Ampere architecture";
+      matBLayout = CUBLASLT_ORDER_COL32_2R_4R4;
+    }
+#endif  // CUDA_VERSION >= 11000
+  }
+
+  CUBLAS_CHECK(
+      cublasLtMatrixLayoutSetAttribute(layout_b_, CUBLASLT_MATRIX_LAYOUT_ORDER,
+                                       &matBLayout, sizeof(matBLayout)));
   CUBLAS_CHECK(
       cublasLtMatrixLayoutCreate(&layout_c_, output_type, options.dim_size_m,
                                  options.dim_size_n, options.dim_size_m));
-  CUBLAS_CHECK(cublasLtMatrixLayoutSetAttribute(
-      layout_c_, CUBLASLT_MATRIX_LAYOUT_ORDER, &kMatrixACLayout,
-      sizeof(kMatrixACLayout)));
+  CUBLAS_CHECK(
+      cublasLtMatrixLayoutSetAttribute(layout_c_, CUBLASLT_MATRIX_LAYOUT_ORDER,
+                                       &matACLayout, sizeof(matACLayout)));
+
+  if (workspacesize_ > 0) {
+    CUDA_CHECK(cudaMalloc(&workspace_, workspacesize_));
+  }
 }
 
-cublasStatus_t CudaInt8TensorInterface::MatrixMultiComputation(
+cublasStatus_t CudaCublasLtInterface::MatrixMultiComputation(
     const ContextOption &context_options, const void *alpha, const void *A,
     const void *B, const void *beta, void *C) {
+  const cublasLtMatmulAlgo_t *algo = nullptr;
+  if (context_options.algo) {
+    algo = &context_options.algo.value();
+  }
   return cublasLtMatmul(cublas_handle_, matmul_desc_,
                         // input and scaling factors.
                         alpha, A, layout_a_, B, layout_b_,
@@ -331,20 +452,42 @@ cublasStatus_t CudaInt8TensorInterface::MatrixMultiComputation(
                         beta, C, layout_c_,
                         // This spot is for 'D', the output variable, but in our
                         // case the math is in-place and C=D.
-                        C, layout_c_,
-                        // Unused algorithm and workspace options.
-                        nullptr, nullptr, 0, stream_);
+                        C, layout_c_, algo, workspace_, workspacesize_,
+                        stream_);
+}
+
+std::vector<cublasLtMatmulHeuristicResult_t>
+CudaCublasLtInterface::GetHeuristicResults(int maxNum) {
+  std::vector<cublasLtMatmulHeuristicResult_t> results(maxNum);
+
+  cublasLtMatmulPreference_t preference = nullptr;
+  CUBLAS_CHECK(cublasLtMatmulPreferenceCreate(&preference));
+  CUBLAS_CHECK(cublasLtMatmulPreferenceSetAttribute(
+      preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspacesize_,
+      sizeof(workspacesize_)));
+
+  int heuristicNum = 0;
+  CUBLAS_CHECK(cublasLtMatmulAlgoGetHeuristic(
+      cublas_handle_, matmul_desc_, layout_a_, layout_b_, layout_c_, layout_c_,
+      preference, maxNum, results.data(), &heuristicNum));
+
+  if (preference) CUBLAS_CHECK(cublasLtMatmulPreferenceDestroy(preference));
+  LOG(INFO) << absl::StreamFormat("GetMatmulAlgoHeuristic %d returned ",
+                                  heuristicNum);
+
+  results.resize(heuristicNum);
+  return results;
 }
 #endif  // CUDA_VERSION >= 10010
 
-template <typename P_in, typename P_out>
-MixedPrecisionHostContext<P_in, P_out>::MixedPrecisionHostContext(
+template <typename P_in, typename P_out, typename P_compute>
+MixedPrecisionHostContext<P_in, P_out, P_compute>::MixedPrecisionHostContext(
     const ContextOption &options)
-    : MixedPrecisionHostContext<P_in, P_out>(
+    : MixedPrecisionHostContext<P_in, P_out, P_compute>(
           options, absl::make_unique<CudaMemoryAllocator>()) {}
 
-template <typename P_in, typename P_out>
-MixedPrecisionHostContext<P_in, P_out>::MixedPrecisionHostContext(
+template <typename P_in, typename P_out, typename P_compute>
+MixedPrecisionHostContext<P_in, P_out, P_compute>::MixedPrecisionHostContext(
     const ContextOption &options,
     std::unique_ptr<MemoryAllocatorInterface> memory_allocator)
     : HostContext(options),
@@ -355,68 +498,63 @@ MixedPrecisionHostContext<P_in, P_out>::MixedPrecisionHostContext(
   b_.Initialize(options.rng, /*scale=*/1e-30, options.gaussian);
 }
 
-template <typename P_in, typename P_out>
+template <typename P_in, typename P_out, typename P_compute>
 std::unique_ptr<GpuContext>
-MixedPrecisionHostContext<P_in, P_out>::CreateGpuContext(int gpu_num) {
-  return absl::make_unique<MixedPrecisionGpuContext<P_in, P_out>>(
-      this, &a_, &b_, gpu_num,
-      SelectGemmInterface(options_.data_type_in, options_.data_type_out,
-                          options_.compute_type, GetComputeCapability()));
+MixedPrecisionHostContext<P_in, P_out, P_compute>::CreateGpuContext(
+    int gpu_num) {
+  std::unique_ptr<GpuComputationInterface> compute_interface =
+      SelectGemmInterface(options_, GetComputeCapability());
+  if (compute_interface == nullptr) return nullptr;
+  return absl::make_unique<MixedPrecisionGpuContext<P_in, P_out, P_compute>>(
+      this, &a_, &b_, gpu_num, std::move(compute_interface));
 }
 
 template <typename Compute_Type>
-void CopyScalingFactorsToDevice(void **alpha, void **beta,
+constexpr std::array<Compute_Type, 2> CreateScalingFactors() {
+  return {{1.0, 0.0}};
+}
+
+template <>
+constexpr std::array<int32_t, 2> CreateScalingFactors<int32_t>() {
+  return {{1, 0}};
+}
+
+template <>
+std::array<half_float::half, 2> CreateScalingFactors<half_float::half>() {
+  std::array<half_float::half, 2> scaling_factors;
+  scaling_factors[0] =
+      half_float::detail::float2half<std::round_to_nearest>(1.);
+  scaling_factors[1] =
+      half_float::detail::float2half<std::round_to_nearest>(0.);
+  return scaling_factors;
+}
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+template <>
+std::array<nv_bfloat16, 2> CreateScalingFactors<nv_bfloat16>() {
+  std::array<nv_bfloat16, 2> scaling_factors;
+  scaling_factors[0] = __float2bfloat16(1.0);
+  scaling_factors[1] = __float2bfloat16(0.0);
+  return scaling_factors;
+}
+#endif  // CUDA_VERSION >= BF16_CUDA_VERSION
+
+template <typename Compute_Type>
+void CopyScalingFactorsToDevice(Compute_Type **alpha, Compute_Type **beta,
                                 const cudaStream_t &stream) {
-  static Compute_Type constants[] = {1., 0.};
+  static std::array<Compute_Type, 2> constants =
+      CreateScalingFactors<Compute_Type>();
   CUDA_CHECK(cudaMalloc(alpha, sizeof(constants)));
   *beta = reinterpret_cast<Compute_Type *>(*alpha) + 1;
-  CUDA_CHECK(cudaMemcpyAsync(*alpha, constants, sizeof(constants),
-                             cudaMemcpyHostToDevice, stream));
+  CUDA_CHECK(cudaMemcpyAsync(static_cast<void *>(*alpha), constants.data(),
+                             sizeof(constants), cudaMemcpyHostToDevice,
+                             stream));
 }
 
-template <>
-void CopyScalingFactorsToDevice<int32_t>(void **alpha, void **beta,
-                                const cudaStream_t &stream) {
-  static int32_t constants[] = {1, 0};
-  CUDA_CHECK(cudaMalloc(alpha, sizeof(constants)));
-  *beta = reinterpret_cast<int32_t *>(*alpha) + 1;
-  CUDA_CHECK(cudaMemcpyAsync(*alpha, constants, sizeof(constants),
-                             cudaMemcpyHostToDevice, stream));
-}
-
-template <>
-void CopyScalingFactorsToDevice<half_float::half>(void **alpha, void **beta,
-                                                  const cudaStream_t &stream) {
-  // place alpha and beta on the device so they don't have
-  // to be refetched in each iteration.
-  static half_float::half constants[2];
-  constants[0] = half_float::detail::float2half<std::round_to_nearest>(1.);
-  constants[1] = half_float::detail::float2half<std::round_to_nearest>(0.);
-
-  CUDA_CHECK(cudaMalloc(alpha, sizeof(constants)));
-  *beta = reinterpret_cast<half_float::half *>(*alpha) + 1;
-  CUDA_CHECK(cudaMemcpyAsync(*alpha, constants, sizeof(constants),
-                             cudaMemcpyHostToDevice, stream));
-}
-
-void GenerateScalingFactor(absl::string_view compute_type, void **alpha,
-                           void **beta, const cudaStream_t &stream) {
-  if (compute_type == "int32") {
-    CopyScalingFactorsToDevice<int32_t>(alpha, beta, stream);
-  } else if (compute_type == "half") {
-    CopyScalingFactorsToDevice<half_float::half>(alpha, beta, stream);
-  } else if (compute_type == "single") {
-    CopyScalingFactorsToDevice<float>(alpha, beta, stream);
-  } else if (compute_type == "double") {
-    CopyScalingFactorsToDevice<double>(alpha, beta, stream);
-  } else {
-    LOG(ERROR) << absl::Substitute(
-        "Unsupported computeType '$0' for cublasGemmEx", compute_type);
-  }
-}
-
-template <typename InputPrecision, typename OutputPrecision>
-GpuDataHandler<InputPrecision, OutputPrecision>::~GpuDataHandler() {
+template <typename InputPrecision, typename OutputPrecision,
+          typename ComputePrecision>
+GpuDataHandler<InputPrecision, OutputPrecision,
+               ComputePrecision>::~GpuDataHandler() {
   // cudaFree is safe to call on already freed or unallocated memory, so no
   // allocation tracking logic is needed.
   cudaFree(input_a_);
@@ -426,11 +564,13 @@ GpuDataHandler<InputPrecision, OutputPrecision>::~GpuDataHandler() {
   cudaFree(alpha_);
 }
 
-template <typename InputPrecision, typename OutputPrecision>
-void GpuDataHandler<InputPrecision, OutputPrecision>::Initialize(
-    const RandomMatrix<InputPrecision> *data_in_a,
-    const RandomMatrix<InputPrecision> *data_in_b, const cudaStream_t stream) {
-  GenerateScalingFactor(compute_type_, &alpha_, &beta_, stream);
+template <typename InputPrecision, typename OutputPrecision,
+          typename ComputePrecision>
+void GpuDataHandler<InputPrecision, OutputPrecision, ComputePrecision>::
+    Initialize(const RandomMatrix<InputPrecision> *data_in_a,
+               const RandomMatrix<InputPrecision> *data_in_b,
+               const cudaStream_t stream) {
+  CopyScalingFactorsToDevice<ComputePrecision>(&alpha_, &beta_, stream);
   const size_t num_bytes_a = data_in_a->SizeInBytes();
   const size_t num_bytes_b = data_in_b->SizeInBytes();
   CUDA_CHECK(cudaMalloc(&input_a_, num_bytes_a));
@@ -448,8 +588,8 @@ void GpuDataHandler<InputPrecision, OutputPrecision>::Initialize(
 // Caller of this function has the ownership for pointers matrix_a_p, and
 // matrix_a_p. Caller should make sure these two pointers are valid until
 // cudaMemcpyAsync() complete (received callback).
-template <typename P_in, typename P_out>
-MixedPrecisionGpuContext<P_in, P_out>::MixedPrecisionGpuContext(
+template <typename P_in, typename P_out, typename P_compute>
+MixedPrecisionGpuContext<P_in, P_out, P_compute>::MixedPrecisionGpuContext(
     HostContext *h, RandomMatrix<P_in> const *const matrix_a_p,
     RandomMatrix<P_in> const *const matrix_b_p, int gpu_num,
     std::unique_ptr<GpuComputationInterface> compute_interface)
@@ -458,37 +598,36 @@ MixedPrecisionGpuContext<P_in, P_out>::MixedPrecisionGpuContext(
   WithCUDADevice device(gpu_num_);
   cudaDeviceProp dev_prop;
   CUDA_CHECK(cudaGetDeviceProperties(&dev_prop, gpu_num_));
-  LOG(INFO) << absl::StrFormat("using GPU %d at %04x:%02x:%02x model %s\n",
-                               gpu_num_, dev_prop.pciDomainID,
-                               dev_prop.pciBusID, dev_prop.pciDeviceID,
-                               dev_prop.name);
+  LOG(INFO) << absl::StrFormat(
+      "Running GEMM on a Cuda device with the following properties:\n"
+      "Device ID = %d\t PCI Bus-Id = %04x:%02x:%02x\t UUID = %s\t Model = %s",
+      gpu_num_, dev_prop.pciDomainID, dev_prop.pciBusID, dev_prop.pciDeviceID,
+      absl::BytesToHexString(dev_prop.uuid.bytes), dev_prop.name);
   CUDA_CHECK(cudaStreamCreate(&stream_));
   compute_interface_->Initialize(stream_, options_);
 
-  data_handler_.SetComputeType(options_.compute_type);
   data_handler_.SetGpuId(gpu_num_);
   data_handler_.Initialize(matrix_a_p, matrix_b_p, stream_);
   CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
-template <typename P_in, typename P_out>
-MixedPrecisionGpuContext<P_in, P_out>::~MixedPrecisionGpuContext() {
+template <typename P_in, typename P_out, typename P_compute>
+MixedPrecisionGpuContext<P_in, P_out, P_compute>::~MixedPrecisionGpuContext() {
   CUDA_CHECK(cudaStreamDestroy(stream_));
 }
 
-template <typename P_in, typename P_out>
-void MixedPrecisionGpuContext<P_in, P_out>::StreamSynchronize() {
+template <typename P_in, typename P_out, typename P_compute>
+void MixedPrecisionGpuContext<P_in, P_out, P_compute>::StreamSynchronize() {
   CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
-template <typename P_in, typename P_out>
-cudaError_t MixedPrecisionGpuContext<P_in, P_out>::StreamQuery() {
+template <typename P_in, typename P_out, typename P_compute>
+cudaError_t MixedPrecisionGpuContext<P_in, P_out, P_compute>::StreamQuery() {
   return cudaStreamQuery(stream_);
 }
 
-
-template <typename P_in, typename P_out>
-void MixedPrecisionGpuContext<P_in, P_out>::LaunchKernel() {
+template <typename P_in, typename P_out, typename P_compute>
+void MixedPrecisionGpuContext<P_in, P_out, P_compute>::LaunchKernel() {
   WithCUDADevice device(gpu_num_);
 
   CUBLAS_CHECK(compute_interface_->MatrixMultiComputation(
@@ -496,22 +635,124 @@ void MixedPrecisionGpuContext<P_in, P_out>::LaunchKernel() {
       data_handler_.InputB(), data_handler_.Beta(), data_handler_.Output()));
 }
 
+float median(std::vector<float> times) {
+  const size_t size = times.size();
+  if (size == 0) {
+    return 0;
+  }
+  std::sort(times.begin(), times.end());
+
+  const size_t mid = size / 2;
+  if (size % 2 == 0) {
+    return (times[mid] + times[mid - 1]) / 2;
+  } else {
+    return times[mid];
+  }
+}
+
+#if CUDA_VERSION >= 10010
+void PrintAlgoInfo(const cublasLtMatmulAlgo_t &algo) {
+  int algoId, tile, swizzle, customOption, numSplitsK, reductionScheme;
+
+  CUBLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
+      &algo, CUBLASLT_ALGO_CONFIG_ID, &algoId, sizeof(algoId), NULL));
+  CUBLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
+      &algo, CUBLASLT_ALGO_CONFIG_TILE_ID, &tile, sizeof(tile), NULL));
+  CUBLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
+      &algo, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &numSplitsK, sizeof(numSplitsK),
+      NULL));
+  CUBLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
+      &algo, CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME, &reductionScheme,
+      sizeof(reductionScheme), NULL));
+  CUBLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
+      &algo, CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING, &swizzle, sizeof(swizzle),
+      NULL));
+  CUBLAS_CHECK(cublasLtMatmulAlgoConfigGetAttribute(
+      &algo, CUBLASLT_ALGO_CONFIG_CUSTOM_OPTION, &customOption,
+      sizeof(customOption), NULL));
+
+  LOG(INFO) << absl::StreamFormat(
+      "algo={ Id=%d, tileIdx=%d splitK=%d reduction=%d swizzle=%d custom=%d }",
+      algoId, tile, numSplitsK, reductionScheme, swizzle, customOption);
+}
+#endif  // CUDA_VERSION >= 10010
+
+template <typename P_in, typename P_out, typename P_compute>
+void MixedPrecisionGpuContext<P_in, P_out, P_compute>::AutoTuning() {
+#if CUDA_VERSION >= 10010
+  static constexpr int kRepeatAlgoCount = 5;
+  static constexpr int kMaxResultNum = 16;
+  CudaCublasLtInterface *pLasLt =
+      dynamic_cast<CudaCublasLtInterface *>(compute_interface_.get());
+  if (pLasLt == nullptr) return;
+
+  WithCUDADevice device(gpu_num_);
+
+  std::vector<cublasLtMatmulHeuristicResult_t> candidates =
+      pLasLt->GetHeuristicResults(kMaxResultNum);
+  int bestIndex;
+  float bestArgoTime, time;
+  std::vector<float> algoTimes(kRepeatAlgoCount);
+
+  LOG(INFO) << absl::StreamFormat("Gpu %d Auto Tune Start ...", gpu_num_);
+
+  cudaEvent_t startEvent, stopEvent;
+  CUDA_CHECK(cudaEventCreate(&startEvent));
+  CUDA_CHECK(cudaEventCreate(&stopEvent));
+
+  ContextOption opt = options_;
+  for (size_t candidate_index = 0; candidate_index < candidates.size();
+       candidate_index++) {
+    opt.algo = candidates[candidate_index].algo;
+    for (int repeat_index = 0; repeat_index < kRepeatAlgoCount;
+         repeat_index++) {
+      CUDA_CHECK(cudaEventRecord(startEvent, stream_));
+      CUBLAS_CHECK(compute_interface_->MatrixMultiComputation(
+          opt, data_handler_.Alpha(), data_handler_.InputA(),
+          data_handler_.InputB(), data_handler_.Beta(),
+          data_handler_.Output()));
+      CUDA_CHECK(cudaEventRecord(stopEvent, stream_));
+      CUDA_CHECK(cudaEventSynchronize(stopEvent));
+      CUDA_CHECK(cudaEventElapsedTime(&time, startEvent, stopEvent));
+      algoTimes[repeat_index] = time;
+    }
+
+    time = median(algoTimes);
+    if (candidate_index == 0 || time < bestArgoTime) {
+      bestArgoTime = time;
+      bestIndex = candidate_index;
+    }
+  }
+  options_.algo = candidates[bestIndex].algo;
+  LOG(INFO) << absl::StreamFormat("Gpu %d Auto Tune Finished", gpu_num_);
+  PrintAlgoInfo(candidates[bestIndex].algo);
+
+#endif  // CUDA_VERSION >= 10010
+}
+
 template class LegacyCudaCublasInterface<float>;
 template class LegacyCudaCublasInterface<double>;
 
-template class GpuDataHandler<half_float::half, half_float::half>;
-template class GpuDataHandler<half_float::half, float>;
-template class GpuDataHandler<float, float>;
-template class GpuDataHandler<double, double>;
-template class GpuDataHandler<int8_t, int32_t>;
-template class GpuDataHandler<int8_t, float>;
+template class GpuDataHandler<half_float::half, half_float::half,
+                              half_float::half>;
+template class GpuDataHandler<half_float::half, float, float>;
+template class GpuDataHandler<float, float, float>;
+template class GpuDataHandler<double, double, double>;
+template class GpuDataHandler<int8_t, int32_t, int32_t>;
+template class GpuDataHandler<int8_t, float, float>;
 
-template class MixedPrecisionHostContext<half_float::half, half_float::half>;
-template class MixedPrecisionHostContext<half_float::half, float>;
-template class MixedPrecisionHostContext<float, float>;
-template class MixedPrecisionHostContext<double, double>;
-template class MixedPrecisionHostContext<int8_t, int32_t>;
-template class MixedPrecisionHostContext<int8_t, float>;
+template class MixedPrecisionHostContext<half_float::half, half_float::half,
+                                         half_float::half>;
+template class MixedPrecisionHostContext<half_float::half, float, float>;
+template class MixedPrecisionHostContext<float, float, float>;
+template class MixedPrecisionHostContext<double, double, double>;
+template class MixedPrecisionHostContext<int8_t, int32_t, int32_t>;
+template class MixedPrecisionHostContext<int8_t, float, float>;
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+template class GpuDataHandler<nv_bfloat16, nv_bfloat16, nv_bfloat16>;
+template class MixedPrecisionHostContext<nv_bfloat16, nv_bfloat16, nv_bfloat16>;
+#endif
 
 }  // namespace internal
 }  // namespace gemm_test

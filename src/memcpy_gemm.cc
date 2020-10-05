@@ -120,6 +120,8 @@ ABSL_FLAG(
     "f(r1,r2) = sqrt(-10*log(r1))*cos(2*pi*r2), where r1, r2 are uniformly "
     "selected from [0,1). (suggested by nVidia)");
 
+ABSL_FLAG(bool, gemm_autotune, false, "Enable Auto Tune for GEMM.");
+
 namespace pgmg = platforms_gpus::memcpy_gemm;
 namespace pggt = platforms_gpus::gemm_test;
 
@@ -175,8 +177,12 @@ class LogEachDeviceOnce {
       cudaDeviceProp dev_prop;
       CUDA_CHECK(cudaGetDeviceProperties(&dev_prop, dev.second));
       LOG(INFO) << absl::StreamFormat(
-          "GPU %d at %x:%02x:%02x model %s", dev.second, dev_prop.pciDomainID,
-          dev_prop.pciBusID, dev_prop.pciDeviceID, dev_prop.name);
+          "Running on a Cuda device with the following properties:\n"
+          "Device ID = %d\t PCI Bus-Id = %04x:%02x:%02x\t UUID = %s\t Model = "
+          "%s",
+          dev.second, dev_prop.pciDomainID, dev_prop.pciBusID,
+          dev_prop.pciDeviceID, absl::BytesToHexString(dev_prop.uuid.bytes),
+          dev_prop.name);
     }
     logged_[dev] = true;
   }
@@ -205,24 +211,7 @@ class PeerEachDeviceOnce {
  protected:
   std::map<std::pair<int, int>, bool> enabled_peers_;
 };
-// Creates the compute thread on each of the requested GPUs.
-std::vector<std::unique_ptr<pgmg::CopyThread>> CreateComputeThreads(
-    pggt::HostContext *host_ctx, pgmg::PulseBarrier *pulse_barrier,
-    const std::vector<std::string> &gpu_list) {
 
-  std::vector<std::unique_ptr<pgmg::CopyThread>> threads;
-  for (auto const &gpu : gpu_list) {
-    int64_t gpu_num;
-    CHECK(absl::SimpleAtoi(gpu, &gpu_num)) << "error parsing '" << gpu << "'";
-    auto thread = CreateGemmThread(host_ctx, pulse_barrier, gpu_num);
-    if (!thread) {
-      LOG(ERROR) << "Failed to create GEMM Thread for GPU " << gpu;
-      continue;
-    }
-    threads.push_back(std::move(thread));
-  }
-  return threads;
-}
 
 static volatile sig_atomic_t signal_received_ = false;
 static void SignalHandler(int) { signal_received_ = true; }
@@ -290,6 +279,7 @@ int main(int argc, char **argv) {
   pggt::ContextOption ctx_opt;
   std::unique_ptr<pggt::HostContext> host_ctx;
   std::vector<std::string> gpu_list = absl::GetFlag(FLAGS_gpus);
+  std::vector<std::unique_ptr<pggt::GpuContext>> gpu_ctxs;
   if (absl::GetFlag(FLAGS_gemm)) {
     ctx_opt.rng = &rng;
     std::string fp_precision = absl::GetFlag(FLAGS_fp_precision);
@@ -302,6 +292,30 @@ int main(int argc, char **argv) {
       ctx_opt.data_type_out = absl::GetFlag(FLAGS_output_precision);
       ctx_opt.compute_type = absl::GetFlag(FLAGS_compute_precision);
     }
+
+    const bool do_auto_tune = absl::GetFlag(FLAGS_gemm_autotune);
+    ctx_opt.use_cublasLt_ = do_auto_tune;
+
+    // Check GPU capabilities against requested GEMM options.
+    const pggt::ComputeCapability compute_capability =
+        pggt::GetComputeCapability();
+    LOG(INFO) << absl::Substitute("GPU compute capability: $0.$1)",
+                                  compute_capability.major,
+                                  compute_capability.minor);
+    if (!pggt::GemmPrecisionIsSupported(
+            compute_capability, ctx_opt.data_type_in, ctx_opt.data_type_out,
+            ctx_opt.compute_type)) {
+      LOG(ERROR) << absl::Substitute(
+          "Unsupported GEMM combination on hardware:\n"
+          "compute capability: $0.$1\n"
+          "input_precision: $2\n"
+          "output_precision: $3\n"
+          "compute_precision:$4",
+          compute_capability.major, compute_capability.minor,
+          ctx_opt.data_type_in, ctx_opt.data_type_out, ctx_opt.compute_type);
+      return 1;
+    }
+
     LOG(INFO) << absl::Substitute(
         "Executing GEMM with input precision=$0, output precision=$1, compute "
         "precision=$2",
@@ -325,8 +339,15 @@ int main(int argc, char **argv) {
       LOG(ERROR) << "GEMM Internal Error: Failed to create a host context.";
       return -1;
     }
+    gpu_ctxs = platforms_gpus::memcpy_gemm::CreateGpuContexts(
+        host_ctx.get(), platforms_gpus::gemm_test::ParseGpuIDsOrDie(gpu_list));
+    if (do_auto_tune) {
+      platforms_gpus::memcpy_gemm::GemmAutoTune(gpu_ctxs);
+    }
     std::vector<std::unique_ptr<pgmg::CopyThread>> compute_threads =
-        CreateComputeThreads(host_ctx.get(), &pulse_barrier, gpu_list);
+        platforms_gpus::memcpy_gemm::MakeComputeThreads(gpu_ctxs,
+                                                        &pulse_barrier);
+
     for (const auto &i : compute_threads) {
       compute_thread_copies.push_back(
           static_cast<pgmg::BaseComputeStream *>(i.get()));

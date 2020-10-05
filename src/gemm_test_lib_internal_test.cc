@@ -8,83 +8,170 @@
 namespace platforms_gpus::gemm_test::internal {
 namespace {
 
-#if CUDA_VERSION >= 10010
-TEST(SelectGemmInterfaceTest, Int8Tensor) {
-  auto result = SelectGemmInterface("int8", "int32", "int32", 7.5);
-  EXPECT_NE(nullptr, dynamic_cast<CudaInt8TensorInterface*>(result.get()));
+#if CUDA_VERSION >= 10010  // CUDA 10.1 or greater
+TEST(SelectGemmInterfaceTest, Int8TensorTuringSquareMatrix) {
+  const ContextOption options{.data_type_in = "int8",
+                              .data_type_out = "int32",
+                              .compute_type = "int32",
+                              .dim_size_m = 2048,
+                              .dim_size_n = 2048,
+                              .dim_size_k = 2048};
+  std::unique_ptr<GpuComputationInterface> result =
+      SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 5});
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
-#endif
+
+TEST(SelectGemmInterfaceTest, Int8TensorTuringNoSquareMatrix) {
+  const ContextOption options{.data_type_in = "int8",
+                              .data_type_out = "int32",
+                              .compute_type = "int32",
+                              .dim_size_m = 4096,
+                              .dim_size_n = 2048,
+                              .dim_size_k = 1024};
+  std::unique_ptr<GpuComputationInterface> result =
+      SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 5});
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+}
+
+#if CUDA_VERSION >= 11000  // CUDA 11 or greater
+TEST(SelectGemmInterfaceTest, Int8TensorAmpereSquareMatrix) {
+  const ContextOption options{.data_type_in = "int8",
+                              .data_type_out = "int32",
+                              .compute_type = "int32",
+                              .dim_size_m = 2048,
+                              .dim_size_n = 2048,
+                              .dim_size_k = 2048};
+  std::unique_ptr<GpuComputationInterface> result =
+      SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 5});
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
+}
+
+TEST(SelectGemmInterfaceTest, Int8TensorAmpereNoSquareMatrix) {
+  const ContextOption options{.data_type_in = "int8",
+                              .data_type_out = "int32",
+                              .compute_type = "int32",
+                              .dim_size_m = 4096,
+                              .dim_size_n = 2048,
+                              .dim_size_k = 1024};
+  std::unique_ptr<GpuComputationInterface> result =
+      SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 5});
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+}
+
+TEST(SelectGemmInterfaceTest, Bf16Matrices) {
+  const ContextOption options{.data_type_in = "bf16",
+                              .data_type_out = "bf16",
+                              .compute_type = "bf16",
+                              .dim_size_m = 4096,
+                              .dim_size_n = 2048,
+                              .dim_size_k = 1024};
+  std::unique_ptr<GpuComputationInterface> result =
+      SelectGemmInterface(options, ComputeCapability{.major = 8, .minor = 0});
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+}
+#endif  // CUDA_VERSION >= 11000
+#endif  // CUDA_VERSION >= 10010
 
 TEST(SelectGemmInterfaceTest, Int8NonTensor) {
-  auto result = SelectGemmInterface("int8", "int32", "int32", 7.0);
+  const ContextOption options{.data_type_in = "int8",
+                              .data_type_out = "int32",
+                              .compute_type = "int32"};
+  auto result =
+      SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 0});
   EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, ModernInterface) {
-  auto result = SelectGemmInterface("half", "half", "half", 7.0);
+  const ContextOption options{.data_type_in = "half",
+                              .data_type_out = "single",
+                              .compute_type = "single"};
+  auto result =
+      SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 0});
   EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, LegacySinglePrecision) {
-  auto result = SelectGemmInterface("single", "single", "single", 3.0);
+  const ContextOption options{.data_type_in = "single",
+                              .data_type_out = "single",
+                              .compute_type = "single"};
+  auto result =
+      SelectGemmInterface(options, ComputeCapability{.major = 3, .minor = 0});
   EXPECT_NE(nullptr,
             dynamic_cast<LegacyCudaCublasInterface<float>*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, LegacyDoublePrecision) {
-  auto result = SelectGemmInterface("double", "double", "double", 3.0);
+  const ContextOption options{.data_type_in = "double",
+                              .data_type_out = "double",
+                              .compute_type = "double"};
+  auto result =
+      SelectGemmInterface(options, ComputeCapability{.major = 3, .minor = 0});
   EXPECT_NE(nullptr,
             dynamic_cast<LegacyCudaCublasInterface<double>*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, FailuresDueToInadequateComputeCap) {
-  EXPECT_EQ(nullptr, SelectGemmInterface("half", "half", "half", 3.0));
+  const ContextOption options{
+      .data_type_in = "half", .data_type_out = "half", .compute_type = "half"};
+  EXPECT_EQ(nullptr, SelectGemmInterface(
+                         options, ComputeCapability{.major = 3, .minor = 0}));
 }
 
 TEST(SelectGemmInterfaceTest, FailuresDueToUnknownTypes) {
-  EXPECT_EQ(nullptr, SelectGemmInterface("quarter", "triple", "bytes", 3.0));
+  const ContextOption options{.data_type_in = "quarter",
+                              .data_type_out = "triple",
+                              .compute_type = "bf16"};
+  EXPECT_EQ(nullptr, SelectGemmInterface(
+                         options, ComputeCapability{.major = 3, .minor = 0}));
 }
 
 TEST(GpuDataHandlerTest, DestructsSafelyWithoutAllocation) {
-  GpuDataHandler<float, float> data_handler;
+  GpuDataHandler<float, float, float> data_handler;
 }
-// TODO: When classes are templated on compute type, add them
-// here and remove the ugly StringRep conversions below.
+
 struct HalfInHalfOut {
   using Input = half_float::half;
   using Output = half_float::half;
-  static constexpr absl::string_view Compute() { return "half"; }
+  using Compute = half_float::half;
 };
 
 struct HalfInFloatOut {
   using Input = half_float::half;
   using Output = float;
-  static constexpr absl::string_view Compute() { return "single"; }
+  using Compute = float;
 };
 
 struct FloatInFloatOut {
   using Input = float;
   using Output = float;
-  static constexpr absl::string_view Compute() { return "single"; }
+  using Compute = float;
 };
 
 struct DoubleInDoubleOut {
   using Input = double;
   using Output = double;
-  static constexpr absl::string_view Compute() { return "double"; }
+  using Compute = double;
 };
 
 struct IntInIntOut {
   using Input = int8_t;
   using Output = int32_t;
-  static constexpr absl::string_view Compute() { return "int32"; }
+  using Compute = int32_t;
 };
 
 struct IntInFloatOut {
   using Input = int8_t;
   using Output = float;
-  static constexpr absl::string_view Compute() { return "single"; }
+  using Compute = float;
 };
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+struct Bf16InBf16Out {
+  using Input = nv_bfloat16;
+  using Output = nv_bfloat16;
+  using Compute = nv_bfloat16;
+};
+#endif  // CUDA_VERSION >= BF16_CUDA_VERSION
 
 template <typename T>
 class GpuDataHandlerAllocationTest : public ::testing::Test {
@@ -103,6 +190,7 @@ TYPED_TEST_SUITE_P(GpuDataHandlerAllocationTest);
 TYPED_TEST_P(GpuDataHandlerAllocationTest, SetupAndCleanup) {
   using InputPrecision = typename TypeParam::Input;
   using OutputPrecision = typename TypeParam::Output;
+  using ComputePrecision = typename TypeParam::Compute;
   cudaSetDevice(0);
 
   const int array_size = 2048;
@@ -113,17 +201,23 @@ TYPED_TEST_P(GpuDataHandlerAllocationTest, SetupAndCleanup) {
   input_a.Initialize(&bitgen, 1, false);
   input_b.Initialize(&bitgen, 1, false);
 
-  GpuDataHandler<InputPrecision, OutputPrecision> data_handler;
+  GpuDataHandler<InputPrecision, OutputPrecision, ComputePrecision>
+      data_handler;
   data_handler.SetGpuId(0);
-  data_handler.SetComputeType(TypeParam::Compute());
   data_handler.Initialize(&input_a, &input_b, this->stream_);
   EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(this->stream_));
 }
 
 REGISTER_TYPED_TEST_SUITE_P(GpuDataHandlerAllocationTest, SetupAndCleanup);
 
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+using MyTypes = ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
+                                 DoubleInDoubleOut, IntInIntOut, IntInFloatOut,
+                                 Bf16InBf16Out>;
+#else
 using MyTypes = ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
                                  DoubleInDoubleOut, IntInIntOut, IntInFloatOut>;
+#endif  // CUDA_VERSION >= BF16_CUDA_VERSION
 
 INSTANTIATE_TYPED_TEST_SUITE_P(MixedPrecisionGpuDataHandler,
                                GpuDataHandlerAllocationTest, MyTypes);
@@ -153,13 +247,22 @@ std::string StringRep<int32_t>() {
   return "int32";
 }
 
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+template <>
+std::string StringRep<nv_bfloat16>() {
+  return "bf16";
+}
+#endif
+
 // Initializes and copies over host data through the handler. Note that host
 // data is not retained beyond this function, but that's fine since we operate
 // only on the GPU data.
-template <typename InputPrecision, typename OutputPrecision>
-void InitializeGPUDataForGEMM(
-    const ContextOption& options, const cudaStream_t& stream,
-    GpuDataHandler<InputPrecision, OutputPrecision>* data_handler) {
+template <typename InputPrecision, typename OutputPrecision,
+          typename ComputePrecision>
+void InitializeGPUDataForGEMM(const ContextOption& options,
+                              const cudaStream_t& stream,
+                              GpuDataHandler<InputPrecision, OutputPrecision,
+                                             ComputePrecision>* data_handler) {
   const int array_size = options.dim_size_m;
   RandomMatrix<InputPrecision> input_a(array_size, array_size);
   RandomMatrix<InputPrecision> input_b(array_size, array_size);
@@ -167,7 +270,6 @@ void InitializeGPUDataForGEMM(
   input_a.Initialize(&bitgen, 1, false);
   input_b.Initialize(&bitgen, 1, false);
 
-  data_handler->SetComputeType(options.compute_type);
   data_handler->SetGpuId(0);
   data_handler->Initialize(&input_a, &input_b, stream);
   // Wait for data transfer to complete.
@@ -201,12 +303,14 @@ TYPED_TEST_SUITE_P(LegacyCublasTest);
 TYPED_TEST_P(LegacyCublasTest, LegacyCublas) {
   using InputPrecision = typename TypeParam::Input;
   using OutputPrecision = typename TypeParam::Output;
+  using ComputePrecision = typename TypeParam::Compute;
 
   this->options_.data_type_in = StringRep<InputPrecision>();
   this->options_.data_type_out = StringRep<OutputPrecision>();
   this->options_.compute_type = StringRep<OutputPrecision>();
 
-  GpuDataHandler<InputPrecision, OutputPrecision> data_handler;
+  GpuDataHandler<InputPrecision, OutputPrecision, ComputePrecision>
+      data_handler;
   // Set up some random data on the GPU for us to compute on, we dont' care
   // about the actual contents.
   InitializeGPUDataForGEMM<InputPrecision, OutputPrecision>(
@@ -255,12 +359,14 @@ TYPED_TEST_SUITE_P(ModernCublasTest);
 TYPED_TEST_P(ModernCublasTest, ModernCublas) {
   using InputPrecision = typename TypeParam::Input;
   using OutputPrecision = typename TypeParam::Output;
+  using ComputePrecision = typename TypeParam::Compute;
 
   this->options_.data_type_in = StringRep<InputPrecision>();
   this->options_.data_type_out = StringRep<OutputPrecision>();
-  this->options_.compute_type = TypeParam::Compute();
+  this->options_.compute_type = StringRep<ComputePrecision>();
 
-  GpuDataHandler<InputPrecision, OutputPrecision> data_handler;
+  GpuDataHandler<InputPrecision, OutputPrecision, ComputePrecision>
+      data_handler;
   // Set up some random data on the GPU for us to compute on, we dont' care
   // about the actual contents.
   InitializeGPUDataForGEMM<InputPrecision, OutputPrecision>(
@@ -276,12 +382,13 @@ TYPED_TEST_P(ModernCublasTest, ModernCublas) {
 
 REGISTER_TYPED_TEST_SUITE_P(ModernCublasTest, ModernCublas);
 
+// Note that we don't add bf16 here, forge does not have hardware capable of
+// testing device-side bf16 compute.
 using ModernTypes =
     ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
                      DoubleInDoubleOut, IntInIntOut, IntInFloatOut>;
 
 INSTANTIATE_TYPED_TEST_SUITE_P(ModernCublasPrecisionsTest, ModernCublasTest,
                                ModernTypes);
-
 }  // namespace
 }  // namespace platforms_gpus::gemm_test::internal

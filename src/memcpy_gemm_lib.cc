@@ -28,6 +28,7 @@
 #include "absl/synchronization/notification.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "absl/types/optional.h"
 #include "src/cuda_check.h"
 #include "src/gemm_test_lib.h"
 #include "cuda/include/cuda_runtime.h"
@@ -217,13 +218,70 @@ void PerGpuThread::Run() {
   CUDA_CHECK(cudaStreamDestroy(stream));
 }
 
-std::unique_ptr<CopyThread> CreateGemmThread(
-    platforms_gpus::gemm_test::HostContext *host_context,
-    platforms_gpus::memcpy_gemm::PulseBarrier *pulse_barrier, int64_t gpu_num) {
-  CHECK(host_context != nullptr);
+std::vector<std::unique_ptr<gemm_test::GpuContext>>
+CreateGpuContexts(platforms_gpus::gemm_test::HostContext *host_ctx,
+                  absl::Span<const int64_t> gpu_list) {
+  std::vector<std::unique_ptr<platforms_gpus::gemm_test::GpuContext>> gpu_ctxs;
+  for (const int64_t gpu : gpu_list) {
+    std::unique_ptr<platforms_gpus::gemm_test::GpuContext> gpuctx =
+        platforms_gpus::gemm_test::GpuContext::Create(host_ctx, gpu);
+    if (gpuctx == nullptr) {
+      LOG(ERROR) << "Failed to create GPU context " << gpu;
+      continue;
+    }
+    gpu_ctxs.push_back(std::move(gpuctx));
+  }
+  return gpu_ctxs;
+}
 
-  return absl::make_unique<GemmExComputeStream>(host_context, gpu_num,
+void GemmAutoTune(
+    std::vector<std::unique_ptr<platforms_gpus::gemm_test::GpuContext>>
+        &gpu_ctxs) {
+  std::vector<std::unique_ptr<GemmExComputeAutoTuneStream>> autotune_threads;
+  for (size_t i = 0; i < gpu_ctxs.size(); i++) {
+    auto th = std::make_unique<GemmExComputeAutoTuneStream>(gpu_ctxs[i].get());
+    if (th == nullptr) {
+      LOG(ERROR) << "Failed to create Auto Tune  thread failed "
+                 << gpu_ctxs[i]->GetGpuIndex();
+      continue;
+    }
+    autotune_threads.push_back(std::move(th));
+  }
+
+  LOG(INFO) << "Starting Auto Tune threads";
+  for (const auto &t : autotune_threads) {
+    t->Start();
+  }
+  for (const auto &t : autotune_threads) {
+    t->Join();
+  }
+  LOG(INFO) << "Join Auto Tune threads";
+}
+
+std::unique_ptr<CopyThread> CreateGemmThread(
+    platforms_gpus::gemm_test::GpuContext *gpu_context,
+    platforms_gpus::memcpy_gemm::PulseBarrier *pulse_barrier) {
+  CHECK(gpu_context != nullptr);
+  return absl::make_unique<GemmExComputeStream>(gpu_context,
                                                 pulse_barrier);
+}
+
+std::vector<std::unique_ptr<CopyThread>> MakeComputeThreads(
+    std::vector<std::unique_ptr<platforms_gpus::gemm_test::GpuContext>>
+        &gpu_ctxs,
+    PulseBarrier *pulse_barrier) {
+  std::vector<std::unique_ptr<CopyThread>> threads;
+  for (auto &ctx : gpu_ctxs) {
+    std::unique_ptr<CopyThread> thread =
+        CreateGemmThread(ctx.get(), pulse_barrier);
+    if (!thread) {
+      LOG(ERROR) << "Failed to create GEMM Thread for GPU "
+                 << ctx->GetGpuIndex();
+      continue;
+    }
+    threads.push_back(std::move(thread));
+  }
+  return threads;
 }
 
 }  // namespace memcpy_gemm

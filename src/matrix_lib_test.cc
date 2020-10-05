@@ -12,16 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "src/matrix_lib.h"
+
+#ifdef RUN_CUDA_TESTS
+#include "src/matrix_lib_cuda.h"
+#endif  // RUN_CUDA_TESTS
+
 #include <cstdint>
 #include <vector>
-
-#include "src/matrix_lib.h"
-#include "src/distribution_tests.h"
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/random/random.h"
+#include "src/distribution_tests.h"
 #include "include/half.hpp"
+
+#ifdef RUN_CUDA_TESTS
+
+#include "cuda/include/cuda.h"
+
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+#include "cuda/include/cuda_bf16.h"
+#define HAS_BF16_CUDA
+#endif
+
+#endif  // RUN_CUDA_TESTS
 
 namespace {
 
@@ -34,6 +49,15 @@ template <typename T>
 double ConvertToDouble(T data) {
   return static_cast<double>(data);
 }
+
+#ifdef HAS_BF16_CUDA
+// Bfloat16 does not have an explicit cast to double, so we must convert
+// through an intermediate.
+template <>
+double ConvertToDouble(nv_bfloat16 data) {
+  return static_cast<double>(__bfloat162float(data));
+}
+#endif  // HAS_BF16_CUDA
 
 // Converts an integer type to double, and scales it down from its original
 // numeric limits to the range of [-1, 1]
@@ -88,6 +112,14 @@ bool TestUniformDistribution(const RandomMatrix<T> &matrix,
     EXPECT_LE(-1.0, cur_data);
 
     auto cur_bucket = static_cast<int>((cur_data - (-1.0)) / 0.1);
+    // The bounds on random floats should preclude having exactly -1.0, but
+    // conversion imprecision involving bf16 can lead to such a value, so we'll
+    // put it in the final bucket. Note that if something goes catastrophically
+    // wrong and a number of < -1.0 values are generated, it will fail the
+    // distribution test, so won't go unnoticed.
+    if (cur_bucket == bucket_size) {
+      cur_bucket--;
+    }
     bucket[cur_bucket]++;
   }
 
@@ -127,7 +159,12 @@ class MatrixTest : public testing::Test {
   ~MatrixTest() override {}
 };
 
+#ifdef HAS_BF16_CUDA
+using MyTypes = ::testing::Types<half, float, double, nv_bfloat16>;
+#else
 using MyTypes = ::testing::Types<half, float, double>;
+#endif  // CUDA_VERSION >= BF16_CUDA_VERSION
+
 TYPED_TEST_SUITE(MatrixTest, MyTypes);
 
 // This test verifies that MatrixLib constructs matrix properly.
@@ -153,8 +190,8 @@ TYPED_TEST(MatrixTest, MatrixPseudoRandomDataGeneration) {
   // Construct two m by k matrices with double data type, and the same seed.
   RandomMatrix<TypeParam> test_matrix_0(m, k);
   RandomMatrix<TypeParam> test_matrix_1(m, k);
-  test_matrix_0.Initialize(&rng0, 3.0, true);
-  test_matrix_1.Initialize(&rng1, 3.0, true);
+  ASSERT_TRUE(test_matrix_0.Initialize(&rng0, 3.0, true));
+  ASSERT_TRUE(test_matrix_1.Initialize(&rng1, 3.0, true));
   const TypeParam *data_0_p = test_matrix_0.Get();
   const TypeParam *data_1_p = test_matrix_1.Get();
   for (int j = 0; j < m * k; ++j, ++data_0_p, ++data_1_p) {
@@ -173,7 +210,7 @@ TYPED_TEST(MatrixTest, MatrixGaussianDataGeneration) {
   // Construct a m by k matrix.
   RandomMatrix<TypeParam> test_matrix(m, k);
   // generate random date with Gaussian distribution.
-  test_matrix.Initialize(&rng, 3.0, true);
+  ASSERT_TRUE(test_matrix.Initialize(&rng, 3.0, true));
   // Returning "true" only means the test had been performed successfully,
   // it doesn't mean the data is with Gaussian distribution.
 
@@ -192,7 +229,7 @@ TYPED_TEST(MatrixTest, MatrixUniformDataGeneration) {
   // Construct a m by k matrix.
   RandomMatrix<TypeParam> test_matrix(m, k);
   // Generate random date with uniform distribution.
-  test_matrix.Initialize(&rng, 1.0, false);
+  ASSERT_TRUE(test_matrix.Initialize(&rng, 1.0, false));
   // Check whether data in the matrix "almost certainly" follow Uniform
   // distribution. The threshold is for p > 0.0001, or one in 10,000, for
   // 4799 degrees of freedom (m * k - 1).
@@ -208,7 +245,7 @@ TEST(MatrixInt8Test, UniformFill) {
   absl::BitGen rng;
 
   RandomMatrix<int8_t> test_matrix(m, k);
-  test_matrix.Initialize(&rng, 1.0, false);
+  ASSERT_TRUE(test_matrix.Initialize(&rng, 1.0, false));
   // Check whether data in the matrix "almost certainly" follow Uniform
   // distribution. The threshold is for p > 0.0001, or one in 10,000, for
   // 4799 degrees of freedom (m * k - 1).
@@ -222,11 +259,7 @@ TEST(MatrixInt8Test, FailGaussianFill) {
   absl::BitGen rng;
 
   RandomMatrix<int8_t> test_matrix(m, k);
-  test_matrix.Initialize(&rng, 1.0, true);
-  // With an unrandomized initialized array, a uniformity test should
-  // always fail.
-  const double threshold = 5172;
-  EXPECT_FALSE(TestUniformDistribution(test_matrix, threshold));
+  EXPECT_FALSE(test_matrix.Initialize(&rng, 1.0, true));
 }
 
 }  // namespace

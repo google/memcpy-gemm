@@ -12,22 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "src/matrix_lib.h"
+#include "src/matrix_lib_cuda.h"
 
 #include "src/matrix_lib_impl.h"
+#include "cuda/include/cuda.h"
 
-namespace {
+#if CUDA_VERSION >= BF16_CUDA_VERSION
+#include "cuda/include/cuda_bf16.h"
+#endif
 
-using ::half_float::half;
-using ::matrix_lib::internal::FillGaussian;
-using ::matrix_lib::internal::FillUniform;
-using ::matrix_lib::internal::kBaseMatrixSize;
-}
-
-// Do base fill in float and then convert to half precision.
+#if CUDA_VERSION >= BF16_CUDA_VERSION
 template <>
-bool matrix_lib::internal::FillArray<half>(half *A, int n, absl::BitGen *rng,
-                                           float scale, bool nv_gauss) {
+bool matrix_lib::internal::FillArray<nv_bfloat16>(nv_bfloat16 *A, int n,
+                                                  absl::BitGen *rng,
+                                                  float scale, bool nv_gauss) {
   auto baseMatrix = std::make_unique<float[]>(kBaseMatrixSize);
   if (nv_gauss) {
     FillGaussian<float>(absl::Span<float>(baseMatrix.get(), kBaseMatrixSize),
@@ -37,12 +35,11 @@ bool matrix_lib::internal::FillArray<half>(half *A, int n, absl::BitGen *rng,
                        rng, scale);
   }
   for (int i = 0; i < n; i++) {
-    A[i] = half(baseMatrix[i % kBaseMatrixSize]);
+    A[i] = __float2bfloat16(baseMatrix[i % kBaseMatrixSize]);
   }
   return true;
 }
 
-template class RandomMatrix<int8_t>;
-template class RandomMatrix<float>;
-template class RandomMatrix<double>;
-template class RandomMatrix<half>;
+template class RandomMatrix<nv_bfloat16>;
+
+#endif  // CUDA_VERSION >= BF16_CUDA_VERSION

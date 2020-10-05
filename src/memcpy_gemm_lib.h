@@ -264,12 +264,9 @@ class ComputeStream : public BaseComputeStream {
 class GemmExComputeStream : public BaseComputeStream {
  public:
   // The HostContext should outlive the GemmExComputeStream
-  GemmExComputeStream(platforms_gpus::gemm_test::HostContext *host_context,
-                      int gpu_number, const PulseBarrier *pulse_barrier)
-      : host_context_(host_context), pulse_barrier_(pulse_barrier) {
-    gpu_context_ = platforms_gpus::gemm_test::GpuContext::Create(
-        host_context_, gpu_number);
-  }
+  GemmExComputeStream(platforms_gpus::gemm_test::GpuContext *gpu_context,
+                      const PulseBarrier *pulse_barrier)
+      : gpu_context_(gpu_context), pulse_barrier_(pulse_barrier) {}
 
  protected:
   void Run() override {
@@ -294,16 +291,45 @@ class GemmExComputeStream : public BaseComputeStream {
   }
 
  private:
-  platforms_gpus::gemm_test::HostContext *host_context_;
-  std::unique_ptr<platforms_gpus::gemm_test::GpuContext> gpu_context_;
+  platforms_gpus::gemm_test::GpuContext *gpu_context_;
   const PulseBarrier *pulse_barrier_;
 };
+
+// Creates GemmExComputeAutoTuneStream compute stream using synchronization with
+// CopyThread. This class is used to find the best algorithm of GEMM gpu
+// context.
+class GemmExComputeAutoTuneStream : public BaseComputeStream {
+ public:
+  GemmExComputeAutoTuneStream(
+      platforms_gpus::gemm_test::GpuContext *gpu_context)
+      : gpu_context_(gpu_context) {}
+  void Run() override { gpu_context_->AutoTuning(); }
+
+ private:
+  platforms_gpus::gemm_test::GpuContext *gpu_context_;
+};
+
+std::vector<std::unique_ptr<platforms_gpus::gemm_test::GpuContext>>
+CreateGpuContexts(platforms_gpus::gemm_test::HostContext *host_ctx,
+                  absl::Span<const int64_t> gpu_list);
+
+void GemmAutoTune(
+    std::vector<std::unique_ptr<platforms_gpus::gemm_test::GpuContext>>
+        &gpu_ctxs);
 
 // factory method to create a thread that wraps a multi_gemm task
 // The HostContext should outlive the created CopyThread.
 std::unique_ptr<CopyThread> CreateGemmThread(
-    platforms_gpus::gemm_test::HostContext *host_context,
-    memcpy_gemm::PulseBarrier *pulse_barrier, int64_t gpu_num);
+    platforms_gpus::gemm_test::GpuContext *gpu_context,
+    memcpy_gemm::PulseBarrier *pulse_barrier);
+
+// Makes compute threads for the provided gpu_list initialized according to
+// Host Context, with one thread per GPU managing the GEMM operations on that
+// GPU.
+std::vector<std::unique_ptr<CopyThread>> MakeComputeThreads(
+    std::vector<std::unique_ptr<platforms_gpus::gemm_test::GpuContext>>
+        &gpu_ctxs,
+    PulseBarrier *pulse_barrier);
 
 }  // namespace memcpy_gemm
 }  // namespace platforms_gpus
