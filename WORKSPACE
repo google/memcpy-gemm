@@ -60,11 +60,10 @@ http_archive(
     name = "half",
     build_file = "//third_party:half.BUILD",
     urls = [
-      "https://ayera.dl.sourceforge.net/project/half/half/1.12.0/half-1.12.0.zip",
+      "https://downloads.sourceforge.net/project/half/half/2.1.0/half-2.1.0.zip",
     ],
-    sha256 = "cdd70d3bf3fe091b688e7ab3f48471c881a197d2c186c95cca8bf156961fb41c",
+    sha256 = "ad1788afe0300fa2b02b0d1df128d857f021f92ccf7c8bddd07812685fa07a25",
 )
-
 # ===== cuda and libnuma need to be configured for the platform =====
 cuda_configure(name = "cuda")
 numa_configure(name = "libnuma")
