@@ -50,6 +50,11 @@ class BufferPool {
   // buffer_index == -1 creates an anonymous buffer
   char *GetBuffer(DeviceSpec dev, int buffer_index);
 
+  ~BufferPool();
+
+  BufferPool(const BufferPool &) = delete;
+  BufferPool &operator=(const BufferPool &) = delete;
+
  protected:
   size_t size_;
   std::map<DeviceSpec, std::vector<char *>> buffers_;
@@ -66,7 +71,8 @@ class Flow {
         to_mem_(to_mem),
         buf_size_(buf_size),
         counter_(counter) {}
-
+  int from_dev_flow_cnt_ = 0;
+  int to_dev_flow_cnt_ = 0;
   DeviceSpec from_dev_;
   char *from_mem_;
   DeviceSpec to_dev_;
@@ -110,6 +116,20 @@ class PulseBarrier {
   bool sync_flows_;
 };
 
+// Tuning parameters for threads handling memcpy flows.
+struct FlowThreadParameters {
+  // Timing parameters for the copy threads.
+  int64_t wait_ns;
+  std::string flow_model;
+  // Control which CUDA API is used to perform the memcpy.
+  bool use_cudaMemcpyPeerAsync;  // NOLINT - suffix matches a CUDA convention.
+  bool use_cudaMemcpyDefault;    // NOLINT - suffix matches a CUDA convention.
+  bool use_cudaComputeCopy;
+  bool use_group_by_dest;
+  // Copy batch_size buffers at a time.
+  int batch_size;
+};
+
 // The CopyThread will exit by setting stop_copying_ (set by the signal
 // handler thread).
 class CopyThread {
@@ -133,14 +153,14 @@ class CopyThread {
 // Copies one flow in one thread.
 class CopySingleFlow : public CopyThread {
  public:
-  CopySingleFlow(Flow *flow, const PulseBarrier *pulse_barrier, int wait_ns,
-                 int batch_size, bool use_cudaMemcpyPeerAsync,
-                 bool use_cudaMemcpyDefault)
+  CopySingleFlow(Flow *flow, const PulseBarrier *pulse_barrier,
+                 const FlowThreadParameters &params)
       : flow_(flow),
-        wait_ns_(wait_ns),
-        batch_size_(batch_size),
-        use_cudaMemcpyPeerAsync_(use_cudaMemcpyPeerAsync),
-        use_cudaMemcpyDefault_(use_cudaMemcpyDefault),
+        wait_ns_(params.wait_ns),
+        batch_size_(params.batch_size),
+        use_cudaMemcpyPeerAsync_(params.use_cudaMemcpyPeerAsync),
+        use_cudaMemcpyDefault_(params.use_cudaMemcpyDefault),
+        use_cudaComputeCopy_(params.use_cudaComputeCopy),
         pulse_barrier_(pulse_barrier) {}
 
  protected:
@@ -154,6 +174,7 @@ class CopySingleFlow : public CopyThread {
   int batch_size_;
   bool use_cudaMemcpyPeerAsync_;
   bool use_cudaMemcpyDefault_;
+  bool use_cudaComputeCopy_;
   const PulseBarrier *pulse_barrier_;
 };
 
@@ -161,11 +182,11 @@ class CopySingleFlow : public CopyThread {
 // invocation to complete, but otherwise does not wait for other flows.
 class EventPollThread : public CopyThread {
  public:
-  EventPollThread(std::vector<Flow *> flows, bool use_cudaMemcpyPeerAsync,
-                  bool use_cudaMemcpyDefault)
+  EventPollThread(std::vector<Flow *> flows, const FlowThreadParameters &params)
       : flows_(std::move(flows)),
-        use_cudaMemcpyPeerAsync_(use_cudaMemcpyPeerAsync),
-        use_cudaMemcpyDefault_(use_cudaMemcpyDefault) {}
+        use_cudaMemcpyPeerAsync_(params.use_cudaMemcpyPeerAsync),
+        use_cudaMemcpyDefault_(params.use_cudaMemcpyDefault),
+        use_cudaComputeCopy_(params.use_cudaComputeCopy) {}
 
  protected:
   void Run() override;
@@ -174,20 +195,23 @@ class EventPollThread : public CopyThread {
   const std::vector<Flow *> flows_;
   const bool use_cudaMemcpyPeerAsync_;
   const bool use_cudaMemcpyDefault_;
+  const bool use_cudaComputeCopy_;
 };
 
 // Each GPU and its associated in/out flows is managed by one thread.
 // All flows on the given GPU are synchronized between each copy.
 class PerGpuThread : public CopyThread {
  public:
-  PerGpuThread(absl::string_view name_prefix, std::vector<Flow *> flows,
-               bool group_by_dest, bool use_cudaMemcpyPeerAsync,
-               bool use_cudaMemcpyDefault)
+  PerGpuThread(absl::string_view name_prefix, const PulseBarrier *pulse_barrier,
+               std::vector<Flow *> flows, const FlowThreadParameters &params)
       : flows_(std::move(flows)),
-        group_by_dest_(group_by_dest),
-        use_cudaMemcpyPeerAsync_(use_cudaMemcpyPeerAsync),
-        use_cudaMemcpyDefault_(use_cudaMemcpyDefault),
-        name_prefix_(name_prefix) {}
+        group_by_dest_(params.use_group_by_dest),
+        batch_size_(params.batch_size),
+        use_cudaMemcpyPeerAsync_(params.use_cudaMemcpyPeerAsync),
+        use_cudaMemcpyDefault_(params.use_cudaMemcpyDefault),
+        use_cudaComputeCopy_(params.use_cudaComputeCopy),
+        name_prefix_(name_prefix),
+        pulse_barrier_(pulse_barrier) {}
 
   std::string NamePrefix() { return name_prefix_; }
 
@@ -197,9 +221,12 @@ class PerGpuThread : public CopyThread {
  private:
   const std::vector<Flow *> flows_;
   const bool group_by_dest_;
+  const int batch_size_;
   const bool use_cudaMemcpyPeerAsync_;
   const bool use_cudaMemcpyDefault_;
+  const bool use_cudaComputeCopy_;
   const std::string name_prefix_;
+  const PulseBarrier *pulse_barrier_;
 };
 
 class BaseComputeStream : public CopyThread {
@@ -217,68 +244,39 @@ class BaseComputeStream : public CopyThread {
   int loops_ = 0;
 };
 
-// Creates SGEMM or DGEMM compute stream using synchronization with CopyThread.
-template <class T>
-class ComputeStream : public BaseComputeStream {
- public:
-  ComputeStream(std::shared_ptr<gemm_test::HostContext> host_context,
-                int gpu_number, const PulseBarrier *pulse_barrier)
-      : host_context_(std::move(host_context)),
-        gpu_context_(absl::make_unique<gemm_test::GpuContext>(
-            host_context_.get(), gpu_number)),
-        pulse_barrier_(pulse_barrier) {}
-
- protected:
-  // Performs the GEMM for high_time followed by low_time non-compute, then
-  // waits for the blocking counter.
-  void Run() override {
-    while (!stop_copying_.HasBeenNotified()) {
-      const absl::Time deadline = pulse_barrier_->HighTimeDeadline();
-      absl::Time start_time = absl::Now();
-      absl::Time end_time;
-      do {
-        gpu_context_->LaunchKernel();
-        gpu_context_->StreamSynchronize();
-        end_time = absl::Now();
-        AddLoop();
-        // The end condition ends up getting slightly smeared as the kernel
-        // isn't scheduled perfectly. Cancellation isn't sent though to the GPU,
-        // which would require special GPU kernel support, since it's not
-        // provided by the NVidia runtime.
-      } while (!stop_copying_.HasBeenNotified() && end_time < deadline);
-
-      AddAccumulatedTime(absl::ToDoubleSeconds(end_time - start_time));
-      VLOG(2) << "pulse high for " << (end_time - start_time);
-    }
-  }
-
- private:
-  std::shared_ptr<gemm_test::HostContext> host_context_;
-  std::unique_ptr<gemm_test::GpuContext> gpu_context_;
-  const PulseBarrier *pulse_barrier_;
-};
-
 // Creates cublasGemmEx compute stream using synchronization with CopyThread.
-// This class is pretty much copied from class ComputeStream. Difference is that
-// GemmExComputeStream class uses mix-precision HostContext and GpuContext.
+// This class uses mix-precision HostContext and GpuContext.
 class GemmExComputeStream : public BaseComputeStream {
  public:
   // The HostContext should outlive the GemmExComputeStream
   GemmExComputeStream(platforms_gpus::gemm_test::GpuContext *gpu_context,
-                      const PulseBarrier *pulse_barrier)
-      : gpu_context_(gpu_context), pulse_barrier_(pulse_barrier) {}
+                      const PulseBarrier *pulse_barrier,
+                      int outstanding_operations_in_flight)
+      : gpu_context_(gpu_context),
+        pulse_barrier_(pulse_barrier),
+        outstanding_operations_in_flight_(outstanding_operations_in_flight) {}
 
  protected:
   void Run() override {
+    bool printWarning = false;
     while (!stop_copying_.HasBeenNotified()) {
       const absl::Time deadline = pulse_barrier_->HighTimeDeadline();
       absl::Time start_time = absl::Now();
+      absl::Time last_time = start_time;
       absl::Time end_time;
       do {
-        gpu_context_->LaunchKernel();
+        for (int i = 0; i < outstanding_operations_in_flight_; i++) {
+          gpu_context_->LaunchKernel();
+          AddLoop();
+        }
         gpu_context_->StreamSynchronize();
         end_time = absl::Now();
-        AddLoop();
+        if (!printWarning && outstanding_operations_in_flight_ == 1 &&
+            (end_time - last_time) < absl::Microseconds(20)) {
+          printWarning = true;
+          LOG(WARNING) << "Kernel execute time too short, may not accurate !!!";
+        }
+        last_time = end_time;
         // The end condition ends up getting slightly smeared as the kernel
         // isn't scheduled perfectly. Cancellation isn't sent though to the GPU,
         // which would require special GPU kernel support, since it's not
@@ -293,6 +291,7 @@ class GemmExComputeStream : public BaseComputeStream {
  private:
   platforms_gpus::gemm_test::GpuContext *gpu_context_;
   const PulseBarrier *pulse_barrier_;
+  const int outstanding_operations_in_flight_;
 };
 
 // Creates GemmExComputeAutoTuneStream compute stream using synchronization with
@@ -321,7 +320,8 @@ void GemmAutoTune(
 // The HostContext should outlive the created CopyThread.
 std::unique_ptr<CopyThread> CreateGemmThread(
     platforms_gpus::gemm_test::GpuContext *gpu_context,
-    memcpy_gemm::PulseBarrier *pulse_barrier);
+    memcpy_gemm::PulseBarrier *pulse_barrier,
+    int outstanding_operations_in_flight);
 
 // Makes compute threads for the provided gpu_list initialized according to
 // Host Context, with one thread per GPU managing the GEMM operations on that
@@ -329,7 +329,12 @@ std::unique_ptr<CopyThread> CreateGemmThread(
 std::vector<std::unique_ptr<CopyThread>> MakeComputeThreads(
     std::vector<std::unique_ptr<platforms_gpus::gemm_test::GpuContext>>
         &gpu_ctxs,
-    PulseBarrier *pulse_barrier);
+    PulseBarrier *pulse_barrier, int outstanding_operations_in_flight);
+
+// Makes memcpy threads for the provided flows and params
+std::vector<std::unique_ptr<CopyThread>> MakeMemcpyThreads(
+    const FlowThreadParameters &params,
+    std::vector<std::unique_ptr<Flow>> &flows, PulseBarrier *pulse_barrier);
 
 }  // namespace memcpy_gemm
 }  // namespace platforms_gpus

@@ -1,10 +1,22 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load(":nvcc.bzl", "cuda_library")
 
 package(default_visibility = ["//visibility:public"])
 
 licenses(["notice"])
 
 exports_files(["LICENSE"])
+
+cuda_library(
+    name = "cuda_compute_copy_kernel",
+    srcs = [
+        "src/cuda_compute_copy.cu",
+    ],
+    hdrs = [
+        "src/cuda_compute_copy.cu.h",
+        "src/cuda_compute_copy.h",
+    ],
+)
 
 cc_library(
     name = "matrix_lib",
@@ -62,8 +74,10 @@ cc_library(
     srcs = ["src/memcpy_gemm_lib.cc"],
     hdrs = ["src/memcpy_gemm_lib.h"],
     deps = [
+        ":cuda_compute_copy_kernel",
         ":gemm_test_lib",
         ":multi_gemm_lib",
+        "@absl//absl/container:flat_hash_map",
         "@absl//absl/memory",
         "@absl//absl/strings",
         "@absl//absl/strings:str_format",
@@ -83,7 +97,7 @@ cc_binary(
         ":gemm_test_lib",
         ":memcpy_gemm_lib",
         ":multi_gemm_lib",
-        "@absl//absl/container:flat_hash_set",
+        "@absl//absl/container:flat_hash_map",
         "@absl//absl/flags:flag",
         "@absl//absl/flags:parse",
         "@absl//absl/memory",

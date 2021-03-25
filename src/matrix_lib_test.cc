@@ -215,9 +215,9 @@ TYPED_TEST(MatrixTest, MatrixGaussianDataGeneration) {
   // it doesn't mean the data is with Gaussian distribution.
 
   EXPECT_TRUE(TestNormalDistribution(test_matrix, &result));
-  // Normality is rejected if result exceeds 1.035 at 1% significance levels.
+  // Normality is rejected if result exceeds 1.159 at 0.5% significance levels.
   // Reference: https://en.wikipedia.org/wiki/Anderson%E2%80%93Darling_test
-  EXPECT_LT(result, 1.035);
+  EXPECT_LT(result, 1.159);
 }
 
 // This test verifies that MatrixLib generates uniform random data properly.

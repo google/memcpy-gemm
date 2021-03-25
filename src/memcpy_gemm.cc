@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -29,7 +30,7 @@
 #include <vector>
 
 #include "glog/logging.h"
-#include "absl/container/flat_hash_set.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/memory/memory.h"
@@ -67,6 +68,10 @@ ABSL_FLAG(bool, use_cudaMemcpyPeerAsync, false,
           "use cudaMemcpyPeerAsync instead of cudaMemcpyAsync.");
 ABSL_FLAG(bool, use_cudaMemcpyDefault, true,
           "Use cudaMemcpyDefault and no other cudaMemcpyKind.");
+ABSL_FLAG(bool, use_cudacomputecopy, false,
+          "explicit use cuda kernel for copying data."
+          "Notably this pulls the data instead of pushing it,"
+          "i.e. the copy kernel runs on the destination.");
 ABSL_FLAG(std::string, flow_model, "thread-per-flow",
           "Choices:  thread-per-flow, event-poll, thread-per-gpu.");
 ABSL_FLAG(int32_t, wait_ns, 0,
@@ -94,7 +99,7 @@ ABSL_FLAG(
 ABSL_FLAG(std::string, output_precision, "single",
           "int32, half, single, or double precision.");
 ABSL_FLAG(std::string, compute_precision, "single",
-          "int32, half, single, or double precision.");
+          "int32, half, single, f32_tf32 or double precision.");
 ABSL_FLAG(std::string, algorithm, "", "cublasGemmEx compute algorithm.");
 
 // The matrices for AxB=C have the following dimensions:
@@ -106,8 +111,7 @@ ABSL_FLAG(size_t, N, 128,
           "Matrices of size NxN. Specify K or M for more options.");
 ABSL_FLAG(size_t, M, 0,
           "Matrices of size MxK multiplied by KxN. Requires K, N.");
-ABSL_FLAG(size_t, K, 0,
-          "Matrices of size NxK multiplied by KxN. Requires N.");
+ABSL_FLAG(size_t, K, 0, "Matrices of size NxK multiplied by KxN. Requires N.");
 ABSL_FLAG(double, high_time, 10.,
           "Approx. amount of time in seconds to do a burst of compute.");
 ABSL_FLAG(double, low_time, .1,
@@ -121,6 +125,11 @@ ABSL_FLAG(
     "selected from [0,1). (suggested by nVidia)");
 
 ABSL_FLAG(bool, gemm_autotune, false, "Enable Auto Tune for GEMM.");
+
+ABSL_FLAG(int, outstanding_gemms_in_flight, 1,
+          "Enqueue this many GEMM operations into the CUDA stream before "
+          "blocking.  This has an effect of amortizing the kernel launch "
+          "overhead by letting the host \"run ahead\" of the GPU.");
 
 namespace pgmg = platforms_gpus::memcpy_gemm;
 namespace pggt = platforms_gpus::gemm_test;
@@ -198,6 +207,7 @@ class PeerEachDeviceOnce {
     if (!absl::GetFlag(FLAGS_use_cudaDeviceEnablePeerAccess)) return;
     if (from_dev.first != pgmg::GPU) return;
     if (to_dev.first != pgmg::GPU) return;
+    if (to_dev.second == from_dev.second) return;
     std::pair<int, int> peers(from_dev.second, to_dev.second);
     if (enabled_peers_.count(peers)) return;
 
@@ -211,7 +221,6 @@ class PeerEachDeviceOnce {
  protected:
   std::map<std::pair<int, int>, bool> enabled_peers_;
 };
-
 
 static volatile sig_atomic_t signal_received_ = false;
 static void SignalHandler(int) { signal_received_ = true; }
@@ -239,8 +248,11 @@ int main(int argc, char **argv) {
   std::vector<std::unique_ptr<std::atomic<int>>> counters;
   std::vector<std::string> flow_strings =
       absl::StrSplit(absl::GetFlag(FLAGS_flows), ' ', absl::SkipEmpty());
-  std::vector<pgmg::Flow *> flows;
+  std::vector<std::unique_ptr<pgmg::Flow>> flows;
 
+  const bool use_cudaComputeCopy = absl::GetFlag(FLAGS_use_cudacomputecopy);
+
+  absl::flat_hash_map<pgmg::DeviceSpec, int> dev_flow_cnt;
   for (const auto &f : flow_strings) {
     pgmg::DeviceSpec from_dev, to_dev;
     int from_index, to_index, counter_index;
@@ -249,7 +261,13 @@ int main(int argc, char **argv) {
               &counter_index);
     dev_logger.Log(from_dev);
     dev_logger.Log(to_dev);
-    peering_pal.Peer(from_dev, to_dev);
+    if (use_cudaComputeCopy) {
+      // For compute copies, pulling gives better results at least on HGX 8
+      // A100, so swap the device order.
+      peering_pal.Peer(to_dev, from_dev);
+    } else {
+      peering_pal.Peer(from_dev, to_dev);
+    }
     for (int i = 0; i < replicas; ++i) {
       char *from_buf = pool.GetBuffer(from_dev, from_index);
       char *to_buf = pool.GetBuffer(to_dev, to_index);
@@ -261,10 +279,17 @@ int main(int argc, char **argv) {
       while (counters.size() <= counter_index) {
         counters.emplace_back(absl::make_unique<std::atomic<int>>(0));
       }
-      flows.emplace_back(new pgmg::Flow(from_dev, from_buf, to_dev, to_buf,
-                                        buffer_size,
-                                        counters[counter_index].get()));
+      flows.emplace_back(std::make_unique<pgmg::Flow>(
+          from_dev, from_buf, to_dev, to_buf, buffer_size,
+          counters[counter_index].get()));
     }
+    dev_flow_cnt[from_dev]++;
+    dev_flow_cnt[to_dev]++;
+  }
+
+  for (auto &flow : flows) {
+    flow->from_dev_flow_cnt_ = dev_flow_cnt[flow->from_dev_];
+    flow->to_dev_flow_cnt_ = dev_flow_cnt[flow->to_dev_];
   }
   std::signal(SIGTERM, SignalHandler);
   std::signal(SIGINT, SignalHandler);
@@ -345,8 +370,9 @@ int main(int argc, char **argv) {
       platforms_gpus::memcpy_gemm::GemmAutoTune(gpu_ctxs);
     }
     std::vector<std::unique_ptr<pgmg::CopyThread>> compute_threads =
-        platforms_gpus::memcpy_gemm::MakeComputeThreads(gpu_ctxs,
-                                                        &pulse_barrier);
+        platforms_gpus::memcpy_gemm::MakeComputeThreads(
+            gpu_ctxs, &pulse_barrier,
+            absl::GetFlag(FLAGS_outstanding_gemms_in_flight));
 
     for (const auto &i : compute_threads) {
       compute_thread_copies.push_back(
@@ -359,27 +385,21 @@ int main(int argc, char **argv) {
       absl::GetFlag(FLAGS_use_cudaMemcpyPeerAsync);
   const bool use_cudaMemcpyDefault = absl::GetFlag(FLAGS_use_cudaMemcpyDefault);
 
-  if (flow_model == "thread-per-flow") {
-    for (int i = 0; i < flows.size(); ++i) {
-      threads.emplace_back(new pgmg::CopySingleFlow(
-          flows[i], &pulse_barrier, absl::GetFlag(FLAGS_wait_ns), batch_size,
-          use_cudaMemcpyPeerAsync, use_cudaMemcpyDefault));
-    }
-  } else if (flow_model == "event-poll") {
-    threads.emplace_back(new pgmg::EventPollThread(
-        flows, use_cudaMemcpyPeerAsync, use_cudaMemcpyDefault));
-  } else if (flow_model == "thread-per-gpu") {
-    absl::flat_hash_set<pgmg::DeviceSpec> gpu_flows;
-    for (auto f : flows) {
-      pgmg::DeviceSpec d =
-          absl::GetFlag(FLAGS_group_by_dest) ? f->to_dev_ : f->from_dev_;
-      if (bool new_device = gpu_flows.insert(d).second; new_device) {
-        threads.emplace_back(new pgmg::PerGpuThread(
-            "per_gpu_thread_" + DeviceSpecToString(d),
-            std::vector<pgmg::Flow *>{f}, absl::GetFlag(FLAGS_group_by_dest),
-            use_cudaMemcpyPeerAsync, use_cudaMemcpyDefault));
-      }
-    }
+  {
+    platforms_gpus::memcpy_gemm::FlowThreadParameters params{
+        .wait_ns = absl::GetFlag(FLAGS_wait_ns),
+        .flow_model = flow_model,
+        .use_cudaMemcpyPeerAsync = use_cudaMemcpyPeerAsync,
+        .use_cudaMemcpyDefault = use_cudaMemcpyDefault,
+        .use_cudaComputeCopy = use_cudaComputeCopy,
+        .use_group_by_dest = absl::GetFlag(FLAGS_group_by_dest),
+        .batch_size = batch_size,
+    };
+    std::vector<std::unique_ptr<pgmg::CopyThread>> memcpyThreads =
+        platforms_gpus::memcpy_gemm::MakeMemcpyThreads(params, flows,
+                                                       &pulse_barrier);
+    std::move(memcpyThreads.begin(), memcpyThreads.end(),
+              std::back_inserter(threads));
   }
 
   absl::Time start_time = absl::Now();
@@ -441,6 +461,21 @@ int main(int argc, char **argv) {
     LOG(INFO) << "Average flops per GPU during high pulse = "
               << (total_ops / accumulated_time) / kTeraScalingFactor
               << " TFLOPS.";
+    for (int gpu_id_index = 0; gpu_id_index < gpu_list.size(); gpu_id_index++) {
+      double total_gpu_ops =
+          compute_thread_copies[gpu_id_index]->Loops() * ops_per_loop;
+      double gpu_tflops = (total_gpu_ops / total_time) / kTeraScalingFactor;
+      double gpu_tflops_during_high_pulse =
+          (total_gpu_ops /
+           compute_thread_copies[gpu_id_index]->AccumulatedTime()) /
+          kTeraScalingFactor;
+      LOG(INFO) << absl::StrCat("gpu_", gpu_list[gpu_id_index],
+                                " average flops = ")
+                << gpu_tflops << " TFLOPS";
+      LOG(INFO) << absl::StrCat("gpu_", gpu_list[gpu_id_index],
+                                " average flops during high_pulse = ")
+                << gpu_tflops_during_high_pulse << " TFLOPS";
+    }
   }
 
   return 0;

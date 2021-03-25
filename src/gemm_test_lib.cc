@@ -38,9 +38,12 @@ namespace platforms_gpus {
 namespace gemm_test {
 
 ComputeCapability GetComputeCapability() {
-  cudaDeviceProp dev_prop;
-  CUDA_CHECK(cudaGetDeviceProperties(&dev_prop, 0));
-  return {dev_prop.major, dev_prop.minor};
+  int major = 0, minor = 0;
+  CUDA_CHECK(
+      cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0));
+  CUDA_CHECK(
+      cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0));
+  return {major, minor};
 }
 
 bool GemmPrecisionIsSupported(const ComputeCapability &compute_capability,
@@ -92,8 +95,14 @@ bool GemmPrecisionIsSupported(const ComputeCapability &compute_capability,
   if (compute_capability.major < kAmpereComputeCap) {
     return false;
   }
-  if (input_precision == "bf16" && output_precision == "bf16" &&
-      compute_precision == "bf16") {
+  if (input_precision == "bf16" &&
+      (output_precision == "bf16" || output_precision == "single") &&
+      compute_precision == "single") {
+    return true;
+  }
+  if (input_precision == "single" &&
+      (output_precision == "single") &&
+      compute_precision == "f32_tf32") {
     return true;
   }
   return false;
@@ -143,9 +152,17 @@ std::unique_ptr<HostContext> HostContext::Create(ContextOption *options) {
         internal::MixedPrecisionHostContext<double, double, double>>(*options);
 #if CUDA_VERSION >= BF16_CUDA_VERSION
   } else if (options->data_type_in == "bf16" &&
-             options->data_type_out == "bf16") {
-    return absl::make_unique<internal::MixedPrecisionHostContext<
-        nv_bfloat16, nv_bfloat16, nv_bfloat16>>(*options);
+             options->data_type_out == "bf16" &&
+             options->compute_type == "single") {
+    return absl::make_unique<
+        internal::MixedPrecisionHostContext<nv_bfloat16, nv_bfloat16, float>>(
+        *options);
+  } else if (options->data_type_in == "bf16" &&
+             options->data_type_out == "single" &&
+             options->compute_type == "single") {
+    return absl::make_unique<
+        internal::MixedPrecisionHostContext<nv_bfloat16, float, float>>(
+        *options);
 #endif  // CUDA_VERSION >= BF16_CUDA_VERSION
   }
 

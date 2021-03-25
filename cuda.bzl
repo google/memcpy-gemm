@@ -40,6 +40,10 @@ cc_library(
     ],
 )
 
+exports_files([
+    "cuda/bin/nvcc"
+])
+
 """,
     )
 

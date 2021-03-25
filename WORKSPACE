@@ -64,6 +64,7 @@ http_archive(
     ],
     sha256 = "ad1788afe0300fa2b02b0d1df128d857f021f92ccf7c8bddd07812685fa07a25",
 )
+
 # ===== cuda and libnuma need to be configured for the platform =====
 cuda_configure(name = "cuda")
 numa_configure(name = "libnuma")

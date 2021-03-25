@@ -30,7 +30,7 @@ TEST(SelectGemmInterfaceTest, Int8TensorTuringNoSquareMatrix) {
                               .dim_size_k = 1024};
   std::unique_ptr<GpuComputationInterface> result =
       SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 5});
-  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
 
 #if CUDA_VERSION >= 11000  // CUDA 11 or greater
@@ -58,10 +58,10 @@ TEST(SelectGemmInterfaceTest, Int8TensorAmpereNoSquareMatrix) {
   EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
 }
 
-TEST(SelectGemmInterfaceTest, Bf16Matrices) {
+TEST(SelectGemmInterfaceTest, Bf16Bf16Matrices) {
   const ContextOption options{.data_type_in = "bf16",
                               .data_type_out = "bf16",
-                              .compute_type = "bf16",
+                              .compute_type = "single",
                               .dim_size_m = 4096,
                               .dim_size_n = 2048,
                               .dim_size_k = 1024};
@@ -69,6 +69,19 @@ TEST(SelectGemmInterfaceTest, Bf16Matrices) {
       SelectGemmInterface(options, ComputeCapability{.major = 8, .minor = 0});
   EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
 }
+
+TEST(SelectGemmInterfaceTest, Bf16SingleMatrices) {
+  const ContextOption options{.data_type_in = "bf16",
+                              .data_type_out = "single",
+                              .compute_type = "single",
+                              .dim_size_m = 4096,
+                              .dim_size_n = 2048,
+                              .dim_size_k = 1024};
+  std::unique_ptr<GpuComputationInterface> result =
+      SelectGemmInterface(options, ComputeCapability{.major = 8, .minor = 0});
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+}
+
 #endif  // CUDA_VERSION >= 11000
 #endif  // CUDA_VERSION >= 10010
 
@@ -316,11 +329,21 @@ TYPED_TEST_P(LegacyCublasTest, LegacyCublas) {
   InitializeGPUDataForGEMM<InputPrecision, OutputPrecision>(
       this->options_, this->stream_, &data_handler);
 
+  GEMMData data{
+      .alpha = data_handler.Alpha(),
+      .beta = data_handler.Beta(),
+      .matA = data_handler.InputA(),
+      .matB = data_handler.InputB(),
+      .matC = data_handler.Output(),
+      .scalePtrType = kPtrType::kDevicePtr,
+  };
+  Algo algo{
+      .cublas_algo_ = CUBLAS_GEMM_DFALT,
+  };
   LegacyCudaCublasInterface<InputPrecision> cublas;
-  cublas.Initialize(this->stream_, this->options_);
-  CUBLAS_CHECK(cublas.MatrixMultiComputation(
-      this->options_, data_handler.Alpha(), data_handler.InputA(),
-      data_handler.InputB(), data_handler.Beta(), data_handler.Output()));
+  cublas.Initialize(this->stream_);
+  cublas.BindGemmMatrices(this->options_, data);
+  CUBLAS_CHECK(cublas.MatrixMultiComputation(algo));
   CUDA_CHECK(cudaStreamSynchronize(this->stream_));
 }
 
@@ -372,11 +395,21 @@ TYPED_TEST_P(ModernCublasTest, ModernCublas) {
   InitializeGPUDataForGEMM<InputPrecision, OutputPrecision>(
       this->options_, this->stream_, &data_handler);
 
+  GEMMData data{
+      .alpha = data_handler.Alpha(),
+      .beta = data_handler.Beta(),
+      .matA = data_handler.InputA(),
+      .matB = data_handler.InputB(),
+      .matC = data_handler.Output(),
+      .scalePtrType = kPtrType::kDevicePtr,
+  };
+  Algo algo{
+      .cublas_algo_ = CUBLAS_GEMM_DFALT,
+  };
   CudaCublasInterface cublas;
-  cublas.Initialize(this->stream_, this->options_);
-  CUBLAS_CHECK(cublas.MatrixMultiComputation(
-      this->options_, data_handler.Alpha(), data_handler.InputA(),
-      data_handler.InputB(), data_handler.Beta(), data_handler.Output()));
+  cublas.Initialize(this->stream_);
+  cublas.BindGemmMatrices(this->options_, data);
+  CUBLAS_CHECK(cublas.MatrixMultiComputation(algo));
   CUDA_CHECK(cudaStreamSynchronize(this->stream_));
 }
 

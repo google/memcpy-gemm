@@ -73,9 +73,17 @@ TEST(SupportedGemmPrecisionTest, Int8Int32Precision) {
       GemmPrecisionIsSupported(kVoltaComputeCap, "int8", "int32", "int32"));
 }
 
-TEST(SupportedGemmPrecisionTest, Bf16Precision) {
+TEST(SupportedGemmPrecisionTest, Bf16Bf16Precision) {
   EXPECT_TRUE(
-      GemmPrecisionIsSupported(kAmpereComputeCap, "bf16", "bf16", "bf16"));
+      GemmPrecisionIsSupported(kAmpereComputeCap, "bf16", "bf16", "single"));
+}
+TEST(SupportedGemmPrecisionTest, Bf16SinglePrecision) {
+  EXPECT_TRUE(
+      GemmPrecisionIsSupported(kAmpereComputeCap, "bf16", "single", "single"));
+}
+TEST(SupportedGemmPrecisionTest, tf32ComputeSinglePrecision) {
+  EXPECT_TRUE(GemmPrecisionIsSupported(kAmpereComputeCap, "single", "single",
+                                       "f32_tf32"));
 }
 
 TEST(SupportedGemmPrecisionTest, IntFailsOnPascal) {
