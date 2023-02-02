@@ -1,8 +1,6 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load(":nvcc.bzl", "cuda_library")
 
-package(default_visibility = ["//visibility:public"])
-
 licenses(["notice"])
 
 exports_files(["LICENSE"])
@@ -93,6 +91,9 @@ cc_library(
 cc_binary(
     name = "memcpy_gemm",
     srcs = ["src/memcpy_gemm.cc"],
+    tags = [
+        "not_build:ppc",
+    ],
     deps = [
         ":gemm_test_lib",
         ":memcpy_gemm_lib",

@@ -23,8 +23,10 @@
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 #include "cuda/include/cuda_bf16.h"
+#include "cuda/include/cuda_fp8.h"
 
 extern template class RandomMatrix<nv_bfloat16>;
+extern template class RandomMatrix<__nv_fp8_e4m3>;
 #endif
 
 #endif  // THIRD_PARTY_GPU_TEST_UTILS_MATRIX_LIB_CUDA_H_

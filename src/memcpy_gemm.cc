@@ -92,12 +92,13 @@ ABSL_FLAG(
     "Accepted inputs for 'fp_precision' are 'half', 'single', and 'double'.");
 ABSL_FLAG(
     std::string, input_precision, "single",
-    "int8, half, single, or double precision. Only a subset of combinations of "
-    "'input_precision', 'output_precision', and 'compute_precision' types are "
-    "allowed, dependent on the CUDA version and GPU architecture. See the "
-    "documentation for a full explanation of supported computation types.");
+    "int8, mini, half, single, or double precision. Only a subset of "
+    "combinations of 'input_precision', 'output_precision', and "
+    "'compute_precision' types are allowed, dependent on the CUDA version and "
+    "GPU architecture. See the documentation for a full explanation of "
+    "supported computation types.");
 ABSL_FLAG(std::string, output_precision, "single",
-          "int32, half, single, or double precision.");
+          "int8, int32, bf16, half, single, or double precision.");
 ABSL_FLAG(std::string, compute_precision, "single",
           "int32, half, single, f32_tf32 or double precision.");
 ABSL_FLAG(std::string, algorithm, "", "cublasGemmEx compute algorithm.");
@@ -277,7 +278,7 @@ int main(int argc, char **argv) {
           flows.size(), DeviceSpecToString(from_dev), from_index, from_buf,
           DeviceSpecToString(to_dev), to_index, to_buf, counter_index);
       while (counters.size() <= counter_index) {
-        counters.emplace_back(absl::make_unique<std::atomic<int>>(0));
+        counters.emplace_back(std::make_unique<std::atomic<int>>(0));
       }
       flows.emplace_back(std::make_unique<pgmg::Flow>(
           from_dev, from_buf, to_dev, to_buf, buffer_size,

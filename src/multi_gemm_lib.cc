@@ -33,4 +33,5 @@ template class CudaRandomMatrix<double>;
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 template class CudaRandomMatrix<nv_bfloat16>;
+template class CudaRandomMatrix<__nv_fp8_e4m3>;
 #endif

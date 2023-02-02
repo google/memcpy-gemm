@@ -327,7 +327,7 @@ std::unique_ptr<CopyThread> CreateGemmThread(
     platforms_gpus::memcpy_gemm::PulseBarrier *pulse_barrier,
     int outstanding_operations_in_flight) {
   CHECK(gpu_context != nullptr);
-  return absl::make_unique<GemmExComputeStream>(
+  return std::make_unique<GemmExComputeStream>(
       gpu_context, pulse_barrier, outstanding_operations_in_flight);
 }
 

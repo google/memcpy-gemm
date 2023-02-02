@@ -33,7 +33,7 @@ TEST(SelectGemmInterfaceTest, Int8TensorTuringNoSquareMatrix) {
   EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
 
-#if CUDA_VERSION >= 11000  // CUDA 11 or greater
+#if CUDA_VERSION >= 11020  // CUDA 11.2 or greater
 TEST(SelectGemmInterfaceTest, Int8TensorAmpereSquareMatrix) {
   const ContextOption options{.data_type_in = "int8",
                               .data_type_out = "int32",
@@ -55,7 +55,7 @@ TEST(SelectGemmInterfaceTest, Int8TensorAmpereNoSquareMatrix) {
                               .dim_size_k = 1024};
   std::unique_ptr<GpuComputationInterface> result =
       SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 5});
-  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, Bf16Bf16Matrices) {
@@ -67,7 +67,7 @@ TEST(SelectGemmInterfaceTest, Bf16Bf16Matrices) {
                               .dim_size_k = 1024};
   std::unique_ptr<GpuComputationInterface> result =
       SelectGemmInterface(options, ComputeCapability{.major = 8, .minor = 0});
-  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, Bf16SingleMatrices) {
@@ -79,11 +79,20 @@ TEST(SelectGemmInterfaceTest, Bf16SingleMatrices) {
                               .dim_size_k = 1024};
   std::unique_ptr<GpuComputationInterface> result =
       SelectGemmInterface(options, ComputeCapability{.major = 8, .minor = 0});
-  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
 
-#endif  // CUDA_VERSION >= 11000
-#endif  // CUDA_VERSION >= 10010
+TEST(SelectGemmInterfaceTest, Fp8Bf16Matrices) {
+  const ContextOption options{.data_type_in = "mini",
+                              .data_type_out = "bf16",
+                              .compute_type = "single",
+                              .dim_size_m = 256,
+                              .dim_size_n = 256,
+                              .dim_size_k = 256};
+  std::unique_ptr<GpuComputationInterface> result =
+      SelectGemmInterface(options, ComputeCapability{.major = 9, .minor = 0});
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
+}
 
 TEST(SelectGemmInterfaceTest, Int8NonTensor) {
   const ContextOption options{.data_type_in = "int8",
@@ -91,7 +100,7 @@ TEST(SelectGemmInterfaceTest, Int8NonTensor) {
                               .compute_type = "int32"};
   auto result =
       SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 0});
-  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
 
 TEST(SelectGemmInterfaceTest, ModernInterface) {
@@ -100,8 +109,12 @@ TEST(SelectGemmInterfaceTest, ModernInterface) {
                               .compute_type = "single"};
   auto result =
       SelectGemmInterface(options, ComputeCapability{.major = 7, .minor = 0});
-  EXPECT_NE(nullptr, dynamic_cast<CudaCublasInterface*>(result.get()));
+  EXPECT_NE(nullptr, dynamic_cast<CudaCublasLtInterface*>(result.get()));
 }
+
+#endif  // CUDA_VERSION >= 11020
+#endif  // CUDA_VERSION >= 10010
+
 
 TEST(SelectGemmInterfaceTest, LegacySinglePrecision) {
   const ContextOption options{.data_type_in = "single",
@@ -148,6 +161,12 @@ struct HalfInHalfOut {
   using Compute = half_float::half;
 };
 
+struct HalfInHalfOutSingleCompute {
+  using Input = half_float::half;
+  using Output = half_float::half;
+  using Compute = float;
+};
+
 struct HalfInFloatOut {
   using Input = half_float::half;
   using Output = float;
@@ -166,6 +185,12 @@ struct DoubleInDoubleOut {
   using Compute = double;
 };
 
+struct Int8InInt8Out {
+  using Input = int8_t;
+  using Output = int8_t;
+  using Compute = int32_t;
+};
+
 struct IntInIntOut {
   using Input = int8_t;
   using Output = int32_t;
@@ -182,7 +207,13 @@ struct IntInFloatOut {
 struct Bf16InBf16Out {
   using Input = nv_bfloat16;
   using Output = nv_bfloat16;
-  using Compute = nv_bfloat16;
+  using Compute = float;
+};
+
+struct MiniInBf16Out {
+  using Input = __nv_fp8_e4m3;
+  using Output = nv_bfloat16;
+  using Compute = float;
 };
 #endif  // CUDA_VERSION >= BF16_CUDA_VERSION
 
@@ -225,8 +256,8 @@ REGISTER_TYPED_TEST_SUITE_P(GpuDataHandlerAllocationTest, SetupAndCleanup);
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 using MyTypes = ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
-                                 DoubleInDoubleOut, IntInIntOut, IntInFloatOut,
-                                 Bf16InBf16Out>;
+                                 DoubleInDoubleOut, Int8InInt8Out, IntInIntOut,
+                                 IntInFloatOut, Bf16InBf16Out, MiniInBf16Out>;
 #else
 using MyTypes = ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
                                  DoubleInDoubleOut, IntInIntOut, IntInFloatOut>;
@@ -264,6 +295,11 @@ std::string StringRep<int32_t>() {
 template <>
 std::string StringRep<nv_bfloat16>() {
   return "bf16";
+}
+
+template <>
+std::string StringRep<__nv_fp8_e4m3>() {
+  return "mini";
 }
 #endif
 

@@ -33,6 +33,7 @@
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 #include "cuda/include/cuda_bf16.h"
+#include "cuda/include/cuda_fp8.h"
 #define HAS_BF16_CUDA
 #endif
 
@@ -261,5 +262,39 @@ TEST(MatrixInt8Test, FailGaussianFill) {
   RandomMatrix<int8_t> test_matrix(m, k);
   EXPECT_FALSE(test_matrix.Initialize(&rng, 1.0, true));
 }
+
+#ifdef HAS_BF16_CUDA
+// similar to int8, fp8 doesn't quite support Gaussian filling either
+TEST(MatrixFp8Test, GaussianFill) {
+  double result;
+  int m = 60;
+  int k = 80;
+  absl::BitGen rng;
+
+  RandomMatrix<__nv_fp8_e4m3> test_matrix(m, k);
+  ASSERT_TRUE(test_matrix.Initialize(&rng, 3.0, true));
+  // Returning "true" only means the test had been performed successfully,
+  // it doesn't mean the data is with Gaussian distribution.
+
+  EXPECT_TRUE(TestNormalDistribution(test_matrix, &result));
+  // Normality is rejected if result exceeds 1.159 at 0.5% significance levels.
+  // Reference: https://en.wikipedia.org/wiki/Anderson%E2%80%93Darling_test
+  EXPECT_LT(result, 1.92);
+}
+
+TEST(MatrixFp8Test, UniformFill) {
+  int m = 60;
+  int k = 80;
+  absl::BitGen rng;
+
+  RandomMatrix<__nv_fp8_e4m3> test_matrix(m, k);
+  ASSERT_TRUE(test_matrix.Initialize(&rng, 1.0, false));
+  // Check whether data in the matrix "almost certainly" follow Uniform
+  // distribution. The threshold is for p > 0.0001, or one in 10,000, for
+  // 4799 degrees of freedom (m * k - 1).
+  const double threshold = 5172;
+  EXPECT_TRUE(TestUniformDistribution(test_matrix, threshold));
+}
+#endif
 
 }  // namespace

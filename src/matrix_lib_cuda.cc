@@ -19,6 +19,7 @@
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 #include "cuda/include/cuda_bf16.h"
+#include "cuda/include/cuda_fp8.h"
 #endif
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
@@ -40,6 +41,26 @@ bool matrix_lib::internal::FillArray<nv_bfloat16>(nv_bfloat16 *A, int n,
   return true;
 }
 
+template <>
+bool matrix_lib::internal::FillArray<__nv_fp8_e4m3>(__nv_fp8_e4m3 *A, int n,
+                                                    absl::BitGen *rng,
+                                                    float scale,
+                                                    bool nv_gauss) {
+  auto baseMatrix = std::make_unique<float[]>(kBaseMatrixSize);
+  if (nv_gauss) {
+    FillGaussian<float>(absl::Span<float>(baseMatrix.get(), kBaseMatrixSize),
+                        rng);
+  } else {
+    FillUniform<float>(absl::Span<float>(baseMatrix.get(), kBaseMatrixSize),
+                       rng, scale);
+  }
+  for (int i = 0; i < n; i++) {
+    A[i] = __nv_fp8_e4m3(baseMatrix[i % kBaseMatrixSize]);
+  }
+  return true;
+}
+
 template class RandomMatrix<nv_bfloat16>;
+template class RandomMatrix<__nv_fp8_e4m3>;
 
 #endif  // CUDA_VERSION >= BF16_CUDA_VERSION

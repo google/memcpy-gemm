@@ -14,6 +14,8 @@
 
 #include "src/gemm_test_lib.h"
 
+#include <memory>
+
 #include "glog/logging.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/numbers.h"
@@ -105,6 +107,18 @@ bool GemmPrecisionIsSupported(const ComputeCapability &compute_capability,
       compute_precision == "f32_tf32") {
     return true;
   }
+  if (input_precision == "int8" && output_precision == "int8" &&
+      compute_precision == "int32") {
+    return true;
+  }
+  if (input_precision == "half" && output_precision == "half" &&
+      compute_precision == "single") {
+    return true;
+  }
+  if (input_precision == "mini" && output_precision == "bf16" &&
+      compute_precision == "single") {
+    return true;
+  }
   return false;
 }
 
@@ -119,50 +133,64 @@ std::vector<int64_t> ParseGpuIDsOrDie(absl::Span<const std::string> gpus) {
 }
 
 // Currently cublasGemmEx() supports: "int8:int32", "half:half", "half:float",
-// "float:float", "double:double", "int8:int32", and "int8:float" precision
-// combinations. The caller of this function has the ownership of options,
-// it should be kept valid during the construction of HostContext.
+// "float:float", "double:double", "int8:int8", "int8:int32", and "int8:float"
+// precision combinations. The caller of this function has the ownership of
+// options, it should be kept valid during the construction of HostContext.
 std::unique_ptr<HostContext> HostContext::Create(ContextOption *options) {
   ProcessContextOptionPrecision(options);
 
   if (options->data_type_in == "int8" && options->data_type_out == "int32") {
-    return absl::make_unique<
+    return std::make_unique<
         internal::MixedPrecisionHostContext<int8_t, int32_t, int32_t>>(
         *options);
   } else if (options->data_type_in == "int8" &&
              options->data_type_out == "single") {
-    return absl::make_unique<
+    return std::make_unique<
         internal::MixedPrecisionHostContext<int8_t, float, float>>(*options);
+  } else if (options->data_type_in == "int8" &&
+             options->data_type_out == "int8") {
+    return std::make_unique<
+        internal::MixedPrecisionHostContext<int8_t, int8_t, int32_t>>(*options);
   } else if (options->data_type_in == "half" &&
-             options->data_type_out == "half") {
-    return absl::make_unique<internal::MixedPrecisionHostContext<
+             options->data_type_out == "half" &&
+             options->compute_type == "half") {
+    return std::make_unique<internal::MixedPrecisionHostContext<
         half_float::half, half_float::half, half_float::half>>(*options);
   } else if (options->data_type_in == "half" &&
+             options->data_type_out == "half" &&
+             options->compute_type == "single") {
+    return std::make_unique<internal::MixedPrecisionHostContext<
+        half_float::half, half_float::half, float>>(*options);
+  } else if (options->data_type_in == "half" &&
              options->data_type_out == "single") {
-    return absl::make_unique<
+    return std::make_unique<
         internal::MixedPrecisionHostContext<half_float::half, float, float>>(
         *options);
   } else if (options->data_type_in == "single" &&
              options->data_type_out == "single") {
-    return absl::make_unique<
+    return std::make_unique<
         internal::MixedPrecisionHostContext<float, float, float>>(*options);
   } else if (options->data_type_in == "double" &&
              options->data_type_out == "double") {
-    return absl::make_unique<
+    return std::make_unique<
         internal::MixedPrecisionHostContext<double, double, double>>(*options);
 #if CUDA_VERSION >= BF16_CUDA_VERSION
   } else if (options->data_type_in == "bf16" &&
              options->data_type_out == "bf16" &&
              options->compute_type == "single") {
-    return absl::make_unique<
+    return std::make_unique<
         internal::MixedPrecisionHostContext<nv_bfloat16, nv_bfloat16, float>>(
         *options);
   } else if (options->data_type_in == "bf16" &&
              options->data_type_out == "single" &&
              options->compute_type == "single") {
-    return absl::make_unique<
+    return std::make_unique<
         internal::MixedPrecisionHostContext<nv_bfloat16, float, float>>(
         *options);
+  } else if (options->data_type_in == "mini" &&
+             options->data_type_out == "bf16") {
+    return std::make_unique<internal::MixedPrecisionHostContext<
+        __nv_fp8_e4m3, nv_bfloat16, float>>(*options);
 #endif  // CUDA_VERSION >= BF16_CUDA_VERSION
   }
 

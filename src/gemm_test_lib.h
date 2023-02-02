@@ -63,7 +63,7 @@ struct ContextOption {
   // CUDA supports "half", "single", and "double", which are 16-bit,
   // 32-bit, 64-bit floating point precision respectively. Limited support also
   // exists for integer operations, with data_type_in = "int8" and data_type
-  // out = "int32" or float.
+  // out = "int32" or float or int8.
   std::string data_type_in;
   std::string data_type_out;
 

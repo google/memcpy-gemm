@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
@@ -57,6 +58,7 @@ cudaDataType_t GetCudaDataType(absl::string_view data_type) {
         {"int8", CUDA_R_8I}, {"int32", CUDA_R_32I},
 #if CUDA_VERSION >= 11000
         {"bf16", CUDA_R_16BF}, {"f32_tf32", CUDA_R_32F},
+        {"mini", CUDA_R_8F_E4M3}
 #endif  // CUDA_VERSION >= 11000
   };
 
@@ -68,9 +70,10 @@ cudaDataType_t GetCudaDataType(absl::string_view data_type) {
   return CUDA_R_64F;
 }
 
-// TODO CUDA 11 cublasGemmEx uses cublasComputeType_t instead
+// CUDA 11 cublasGemmEx uses cublasComputeType_t instead
 // of cublasDataType_t. This setup works at the moment because of enum
-// equivalence, but is very sketchy. Separate out cuda 10 vs 11 implementations.
+// equivalence, but is very sketchy. It may be best to separate out cuda 10
+// vs 11 implementations.
 cudaDataType_t GetCudaComputeType(absl::string_view compute_type) {
   static const absl::flat_hash_map<absl::string_view, cudaDataType_t>
       compute_mapping{
@@ -174,6 +177,10 @@ bool dataTypeIMMAKernel(const ContextOption &options) {
          (options.data_type_out == "int32" || options.data_type_out == "int8");
 }
 
+bool dataTypeFP8Kernel(const ContextOption &options) {
+  return options.data_type_in == "mini";
+}
+
 }  //  namespace
 
 std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
@@ -182,11 +189,11 @@ std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
   // We can use cublasLt for all the cuda devices,
   // but cublas seems to have good performance for old machines
   if (compute_capability.major >= 7)
-    return absl::make_unique<CudaCublasLtInterface>();
+    return std::make_unique<CudaCublasLtInterface>();
 #elif CUDA_VERSION >= 10010
   if (options.use_cublasLt_ && !dataTypeIMMAKernel(options)) {
     LOG(INFO) << "Using cublasLT for GEMM computation";
-    return absl::make_unique<CudaCublasLtInterface>();
+    return std::make_unique<CudaCublasLtInterface>();
   }
   // Turing and later architectures support tensor int8 operations. Note that
   // this does not include compute capability == 7 (Volta), which has CUDA core
@@ -195,7 +202,7 @@ std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
   if ((compute_capability.major > 7 ||
        (compute_capability.major == 7 && compute_capability.minor > 0))) {
     LOG(INFO) << "Using cublasLT IMMA for GEMM computation";
-    return absl::make_unique<CudaCublasLtInterface>();
+    return std::make_unique<CudaCublasLtInterface>();
   }
 #endif  // CUDA_VERSION >= 11020
 
@@ -203,7 +210,7 @@ std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
   // handle any combination of data types except int8 out.
   if (compute_capability.major >= 5 && options.data_type_out != "int8") {
     LOG(INFO) << "Using cublasGemmEx for GEMM computation";
-    return absl::make_unique<CudaCublasInterface>();
+    return std::make_unique<CudaCublasInterface>();
   }
   // If on an older machine, the data type determines the function to be called.
   // Note that we don't have to worry about mixed precision, since older devices
@@ -211,12 +218,12 @@ std::unique_ptr<GpuComputationInterface> SelectGemmInterface(
   if (options.data_type_in == "single" && options.data_type_out == "single" &&
       options.compute_type == "single") {
     LOG(INFO) << "Using cublasSGemm for GEMM computation";
-    return absl::make_unique<LegacyCudaCublasInterface<float>>();
+    return std::make_unique<LegacyCudaCublasInterface<float>>();
   }
   if (options.data_type_in == "double" && options.data_type_out == "double" &&
       options.compute_type == "double") {
     LOG(INFO) << "Using cublasDGemm for GEMM computation";
-    return absl::make_unique<LegacyCudaCublasInterface<double>>();
+    return std::make_unique<LegacyCudaCublasInterface<double>>();
   }
   LOG(ERROR) << absl::Substitute(
       "Memcpy-gemm does not support the combination of:\n"
@@ -423,6 +430,7 @@ void CudaCublasLtInterface::BindGemmMatrices(const ContextOption &options,
   cublasOperation_t opB = matrices_info_.opB;
   int64_t lda = matrices_info_.lda, ldb = matrices_info_.ldb,
           ldc = matrices_info_.ldc;
+  uint64_t rowA = matrices_info_.m, colA = matrices_info_.k;
   uint64_t rowB = matrices_info_.k, colB = matrices_info_.n;
   if (dataTypeIMMAKernel(options)) {
     const ComputeCapability compute_capability = GetComputeCapability();
@@ -441,16 +449,34 @@ void CudaCublasLtInterface::BindGemmMatrices(const ContextOption &options,
     // using a new CUDA 11 matrix layout.
     else if (compute_capability.major >= 8) {
       LOG(INFO) << "Optimizing matrix layout for Ampere architecture";
-      order_b = CUBLASLT_ORDER_COL32_2R_4R4;
-      order_a = order_c = CUBLASLT_ORDER_COL32;
+      // this order only applies to int32 out, not int8 out
+      if (matrices_info_.output_data_type == CUDA_R_32I) {
+        order_b = CUBLASLT_ORDER_COL32_2R_4R4;
+        order_a = order_c = CUBLASLT_ORDER_COL32;
+      }
       ldb = kInt8RowAlignment * roundup(matrices_info_.n, 32);
       lda = ldc = kInt8RowAlignment * matrices_info_.m;
-      opA = kTransOpA;
-      opB = kTransOpB;
-      std::swap(rowB, colB);
+      // according to CUDA API documentation, int8 must use TN format
+      if (matrices_info_.output_data_type == CUDA_R_8I) {
+        opA = CUBLAS_OP_T;
+        opB = CUBLAS_OP_N;
+        std::swap(rowA, colA);
+      } else {
+        opA = kTransOpA;
+        opB = kTransOpB;
+        std::swap(rowB, colB);
+      }
     }
 #endif  // CUDA_VERSION >= 11000
   }
+
+#if CUDA_VERSION >= 12000
+  if (dataTypeFP8Kernel(options)) {
+    opA = CUBLAS_OP_T;
+    opB = CUBLAS_OP_N;
+    std::swap(rowA, colA);
+  }
+#endif
 
 #if CUDA_VERSION >= 11000
   CUBLAS_CHECK(cublasLtMatmulDescCreate(
@@ -485,7 +511,7 @@ void CudaCublasLtInterface::BindGemmMatrices(const ContextOption &options,
   // Matrix descriptors
   CUBLAS_CHECK(
       cublasLtMatrixLayoutCreate(&layout_a_, matrices_info_.input_data_type,
-                                 matrices_info_.m, matrices_info_.k, lda))
+                                 rowA, colA, lda))
   CUBLAS_CHECK(cublasLtMatrixLayoutSetAttribute(
       layout_a_, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_a, sizeof(order_a)));
 
@@ -652,7 +678,7 @@ template <typename P_in, typename P_out, typename P_compute>
 MixedPrecisionHostContext<P_in, P_out, P_compute>::MixedPrecisionHostContext(
     const ContextOption &options)
     : MixedPrecisionHostContext<P_in, P_out, P_compute>(
-          options, absl::make_unique<CudaMemoryAllocator>()) {}
+          options, std::make_unique<CudaMemoryAllocator>()) {}
 
 template <typename P_in, typename P_out, typename P_compute>
 MixedPrecisionHostContext<P_in, P_out, P_compute>::MixedPrecisionHostContext(
@@ -673,7 +699,7 @@ MixedPrecisionHostContext<P_in, P_out, P_compute>::CreateGpuContext(
   std::unique_ptr<GpuComputationInterface> compute_interface =
       SelectGemmInterface(options_, GetComputeCapability());
   if (compute_interface == nullptr) return nullptr;
-  return absl::make_unique<MixedPrecisionGpuContext<P_in, P_out, P_compute>>(
+  return std::make_unique<MixedPrecisionGpuContext<P_in, P_out, P_compute>>(
       this, &a_, &b_, gpu_num, std::move(compute_interface));
 }
 
@@ -912,21 +938,28 @@ template class LegacyCudaCublasInterface<double>;
 
 template class GpuDataHandler<half_float::half, half_float::half,
                               half_float::half>;
+template class GpuDataHandler<half_float::half, half_float::half, float>;
 template class GpuDataHandler<half_float::half, float, float>;
 template class GpuDataHandler<float, float, float>;
 template class GpuDataHandler<double, double, double>;
+template class GpuDataHandler<int8_t, int8_t, int32_t>;
 template class GpuDataHandler<int8_t, int32_t, int32_t>;
 template class GpuDataHandler<int8_t, float, float>;
 
 template class MixedPrecisionHostContext<half_float::half, half_float::half,
                                          half_float::half>;
+template class MixedPrecisionHostContext<half_float::half, half_float::half,
+                                         float>;
 template class MixedPrecisionHostContext<half_float::half, float, float>;
 template class MixedPrecisionHostContext<float, float, float>;
 template class MixedPrecisionHostContext<double, double, double>;
+template class MixedPrecisionHostContext<int8_t, int8_t, int32_t>;
 template class MixedPrecisionHostContext<int8_t, int32_t, int32_t>;
 template class MixedPrecisionHostContext<int8_t, float, float>;
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
+template class GpuDataHandler<__nv_fp8_e4m3, nv_bfloat16, float>;
+template class MixedPrecisionHostContext<__nv_fp8_e4m3, nv_bfloat16, float>;
 template class GpuDataHandler<nv_bfloat16, nv_bfloat16, float>;
 template class MixedPrecisionHostContext<nv_bfloat16, nv_bfloat16, float>;
 template class GpuDataHandler<nv_bfloat16, float, float>;

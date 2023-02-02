@@ -32,6 +32,7 @@
 #endif
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 #include "cuda/include/cuda_bf16.h"
+#include "cuda/include/cuda_fp8.h"
 #endif
 
 namespace platforms_gpus {
@@ -293,21 +294,29 @@ class MixedPrecisionGpuContext : public GpuContext {
 
 extern template class GpuDataHandler<half_float::half, half_float::half,
                                      half_float::half>;
+extern template class GpuDataHandler<half_float::half, half_float::half, float>;
 extern template class GpuDataHandler<half_float::half, float, float>;
 extern template class GpuDataHandler<float, float, float>;
 extern template class GpuDataHandler<double, double, double>;
+extern template class GpuDataHandler<int8_t, int8_t, int32_t>;
 extern template class GpuDataHandler<int8_t, int32_t, int32_t>;
 extern template class GpuDataHandler<int8_t, float, float>;
 
 extern template class MixedPrecisionHostContext<
     half_float::half, half_float::half, half_float::half>;
+extern template class MixedPrecisionHostContext<
+    half_float::half, half_float::half, float>;
 extern template class MixedPrecisionHostContext<half_float::half, float, float>;
 extern template class MixedPrecisionHostContext<float, float, float>;
 extern template class MixedPrecisionHostContext<double, double, double>;
+extern template class MixedPrecisionHostContext<int8_t, int8_t, int32_t>;
 extern template class MixedPrecisionHostContext<int8_t, int32_t, int32_t>;
 extern template class MixedPrecisionHostContext<int8_t, float, float>;
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
+extern template class GpuDataHandler<__nv_fp8_e4m3, nv_bfloat16, float>;
+extern template class MixedPrecisionHostContext<__nv_fp8_e4m3, nv_bfloat16,
+                                                float>;
 extern template class GpuDataHandler<nv_bfloat16, nv_bfloat16, float>;
 extern template class MixedPrecisionHostContext<nv_bfloat16, nv_bfloat16,
                                                 float>;

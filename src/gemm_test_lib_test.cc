@@ -14,6 +14,8 @@
 
 #include "src/gemm_test_lib.h"
 
+#include <memory>
+
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/random/random.h"
@@ -122,6 +124,12 @@ struct HalfInHalfOut {
   using Compute = half_float::half;
 };
 
+struct HalfInHalfOutSingleCompute {
+  using Input = half_float::half;
+  using Output = half_float::half;
+  using Compute = float;
+};
+
 struct HalfInFloatOut {
   using Input = half_float::half;
   using Output = float;
@@ -140,6 +148,12 @@ struct DoubleInDoubleOut {
   using Compute = double;
 };
 
+struct Int8InInt8Out {
+  using Input = int8_t;
+  using Output = int8_t;
+  using Compute = int32_t;
+};
+
 struct IntInIntOut {
   using Input = int8_t;
   using Output = int32_t;
@@ -156,7 +170,13 @@ struct IntInFloatOut {
 struct Bf16InBf16Out {
   using Input = nv_bfloat16;
   using Output = nv_bfloat16;
-  using Compute = nv_bfloat16;
+  using Compute = float;
+};
+
+struct MiniInBf16Out {
+  using Input = __nv_fp8_e4m3;
+  using Output = nv_bfloat16;
+  using Compute = float;
 };
 #endif  // CUDA_VERSION >= BF16_CUDA_VERSION
 
@@ -209,16 +229,16 @@ TYPED_TEST_P(HostContextTest, CreateHostContextSuccess) {
   using OutputType = typename TypeParam::Output;
   using ComputeType = typename TypeParam::Compute;
 
-  auto memory_allocator = absl::make_unique<MockMemoryAllocator>();
-  auto cublas = absl::make_unique<internal::CudaCublasInterface>();
+  auto memory_allocator = std::make_unique<MockMemoryAllocator>();
+  auto cublas = std::make_unique<internal::CudaCublasInterface>();
 
   size_t a_size = this->options_.dim_size_m * this->options_.dim_size_k;
   size_t b_size = this->options_.dim_size_k * this->options_.dim_size_n;
 
-  auto matrix_a = absl::make_unique<InputType[]>(a_size);
-  auto matrix_b = absl::make_unique<InputType[]>(b_size);
+  auto matrix_a = std::make_unique<InputType[]>(a_size);
+  auto matrix_b = std::make_unique<InputType[]>(b_size);
 
-  auto host_context = absl::make_unique<
+  auto host_context = std::make_unique<
       internal::MixedPrecisionHostContext<InputType, OutputType, ComputeType>>(
       this->options_, std::move(memory_allocator));
 
@@ -236,8 +256,8 @@ REGISTER_TYPED_TEST_SUITE_P(HostContextTest, CreateHostContextSuccess);
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 using MyTypes = ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
-                                 DoubleInDoubleOut, IntInIntOut, IntInFloatOut,
-                                 Bf16InBf16Out>;
+                                 DoubleInDoubleOut, Int8InInt8Out, IntInIntOut,
+                                 IntInFloatOut, Bf16InBf16Out, MiniInBf16Out>;
 #else
 using MyTypes = ::testing::Types<HalfInHalfOut, HalfInFloatOut, FloatInFloatOut,
                                  DoubleInDoubleOut, IntInIntOut, IntInFloatOut>;

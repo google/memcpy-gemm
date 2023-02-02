@@ -31,6 +31,7 @@
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 #include "cuda/include/cuda_bf16.h"
+#include "cuda/include/cuda_fp8.h"
 #endif
 
 // The concrete class wraps real memory allocation APIs
@@ -82,6 +83,7 @@ extern template class CudaRandomMatrix<double>;
 
 #if CUDA_VERSION >= BF16_CUDA_VERSION
 extern template class CudaRandomMatrix<nv_bfloat16>;
+extern template class CudaRandomMatrix<__nv_fp8_e4m3>;
 #endif
 
 
